@@ -1,0 +1,78 @@
+@echo off
+chcp 65001 >nul
+title 1945 Game - GitHub Deployment
+color 0A
+
+:start
+cls
+echo.
+echo  ███████╗ ██████╗██╗  ██╗ ██████╗ 
+echo  ██╔════╝██╔════╝██║  ██║██╔═══██╗
+echo  █████╗  ██║     ███████║██║   ██║
+echo  ██╔══╝  ██║     ██╔══██║██║   ██║
+echo  ███████╗╚██████╗██║  ██║╚██████╔╝
+echo  ╚══════╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝ 
+echo     GAME - GITHUB DEPLOYMENT
+echo.
+echo  ═══════════════════════════════════════
+echo.
+echo   1️⃣  GitHub에서 Repository 생성
+echo       👉 https://github.com/new
+echo       👉 이름: 1945-game (Public)
+echo       👉 Create repository
+echo.
+echo   2️⃣  생성된 페이지에서 URL 복사
+echo       👉 https://github.com/여기서복사/1945-game.git
+echo.
+echo   3️⃣  아래에 URL 붙여넣기
+echo.
+echo  ═══════════════════════════════════════
+echo.
+
+set /p GIT_URL="▶ GitHub URL 붙여넣고 Enter: "
+
+if "%GIT_URL%"=="" (
+    echo.
+    echo  ❌ URL을 입력해주세요!
+    timeout /t 2 >nul
+    goto start
+)
+
+echo.
+echo  🔄 연결 중... %GIT_URL%
+git remote add origin "%GIT_URL%" 2>nul
+git branch -M main
+
+echo.
+echo  ⏳ 업로드 중... (잠시만 기다려주세요)
+echo.
+git push -u origin main --force
+
+if errorlevel 1 (
+    echo.
+    echo  ❌ 업로드 실패! URL을 확인해주세요.
+    echo  💡 https://github.com/new 에서 다시 repository를 만드세요.
+    pause
+    goto start
+)
+
+echo.
+echo  ═══════════════════════════════════════
+echo  ✅ ✅ ✅  업로드 완료!  ✅ ✅ ✅
+echo  ═══════════════════════════════════════
+echo.
+echo  📌 GitHub Pages 활성화 (필수!)
+echo  ┌────────────────────────────────────────┐
+echo  │  1. github.com/%USERNAME%/1945-game 접속 │
+echo  │  2. Settings 클릭                      │
+echo  │  3. Pages 메뉴 클릭                     │
+echo  │  4. Source: main / (root) 선택         │
+echo  │  5. Save 클릭                          │
+echo  └────────────────────────────────────────┘
+echo.
+echo  🌐 1~2분 후 접속: 
+echo  https://%USERNAME%.github.io/1945-game/
+echo.
+echo  ═══════════════════════════════════════
+echo.
+pause
