@@ -1,0 +1,35 @@
+╔══════════════════════════════════════════════════════════════╗
+║          1945 GAME - GITHUB 배포 가이드                      ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  1️⃣  GITHUB에서 REPOSITORY 생성                              ║
+║      → https://github.com/new 접속                           ║
+║      → 이름: 1945-game (Public)                              ║
+║      → Create repository 클릭                                ║
+║                                                              ║
+║  2️⃣  DEPLOY 스크립트 실행                                    ║
+║      → upload-to-github.bat 더블클릭                         ║
+║      → Repository URL 붙여넣기                               ║
+║                                                              ║
+║  3️⃣  GITHUB PAGES 활성화                                     ║
+║      → Repository Settings → Pages                           ║
+║      → Source: main / (root)                                 ║
+║                                                              ║
+║  4️⃣  접속                                                     ║
+║      → https://사용자명.github.io/1945-game/                  ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+현재 파일 목록:
+  ✅ index.html    - 게임
+  ✅ game.js       - 게임 로직
+  ✅ README.md     - 설명서
+  ✅ SPEC.md       - 기획서
+  ✅ .gitignore    - Git 설정
+  ✅ .nojekyll     - GitHub Pages 설정
+  ✅ upload-to-github.bat - 배포 스크립트
+
+Git 상태:
+  커밋 4개 완료
+  Branch: master
+  원격 저장소: 미연결 (설정 필요)
