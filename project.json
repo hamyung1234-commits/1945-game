@@ -1,0 +1,32 @@
+{
+  "profile": {
+    "id": "7bfafbcf-7307-4b21-8204-70ef472e62f3",
+    "name": "1945 게임",
+    "description": "비행슈팅 게임",
+    "project_type": "web_app",
+    "industry": "other",
+    "skill_level": "beginner",
+    "created_at": "2026-04-10T10:12:57.643Z",
+    "updated_at": "2026-04-10T10:12:57.643Z"
+  },
+  "goals": [],
+  "roles": [],
+  "features": [],
+  "screens": [],
+  "flows": [],
+  "components": [],
+  "data_entities": [],
+  "apis": [],
+  "integrations": [],
+  "workstreams": [],
+  "milestones": [],
+  "open_questions": [],
+  "conflicts": [],
+  "design_tokens": [],
+  "deployment_targets": [],
+  "discovery_state": "not_started",
+  "discovery_completion_score": 0,
+  "active_blueprint_view": "screen",
+  "version": 1,
+  "last_saved_at": "2026-04-10T10:12:57.643Z"
+}
