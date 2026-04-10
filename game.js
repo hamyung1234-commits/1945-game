@@ -105,6 +105,73 @@ document.addEventListener('keyup', (e) => {
 });
 
 // ============================================
+// MOBILE TOUCH CONTROLS
+// ============================================
+
+function setupMobileControls() {
+    const btnLeft = document.getElementById('btnLeft');
+    const btnRight = document.getElementById('btnRight');
+    const btnUp = document.getElementById('btnUp');
+    const btnDown = document.getElementById('btnDown');
+    const btnFire = document.getElementById('btnFire');
+    const btnBomb = document.getElementById('btnBomb');
+    
+    if (!btnFire) return;
+    
+    // Touch handlers
+    function addTouchHandler(btn, keyCode, keyCode2 = null) {
+        const activate = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            keys[keyCode] = true;
+            if (keyCode2) keys[keyCode2] = true;
+            btn.classList.add('active');
+        };
+        
+        const deactivate = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            keys[keyCode] = false;
+            if (keyCode2) keys[keyCode2] = false;
+            btn.classList.remove('active');
+        };
+        
+        btn.addEventListener('touchstart', activate, { passive: false });
+        btn.addEventListener('touchend', deactivate, { passive: false });
+        btn.addEventListener('touchcancel', deactivate, { passive: false });
+        btn.addEventListener('mousedown', activate);
+        btn.addEventListener('mouseup', deactivate);
+        btn.addEventListener('mouseleave', deactivate);
+    }
+    
+    addTouchHandler(btnLeft, 'ArrowLeft', 'KeyA');
+    addTouchHandler(btnRight, 'ArrowRight', 'KeyD');
+    addTouchHandler(btnUp, 'ArrowUp', 'KeyW');
+    addTouchHandler(btnDown, 'ArrowDown', 'KeyS');
+    addTouchHandler(btnFire, 'Space');
+    
+    // Bomb button
+    btnBomb.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (gameState === GameState.PLAYING) useBomb();
+        btnBomb.classList.add('active');
+    }, { passive: false });
+    
+    btnBomb.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        btnBomb.classList.remove('active');
+    }, { passive: false });
+    
+    btnBomb.addEventListener('mousedown', () => {
+        if (gameState === GameState.PLAYING) useBomb();
+    });
+}
+
+// Initialize mobile controls
+setupMobileControls();
+
+// ============================================
 // GAME FUNCTIONS
 // ============================================
 
