@@ -5,6 +5,327 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+// ============================================
+// AUDIO SYSTEM - Web Audio API Sounds
+// ============================================
+
+let audioContext = null;
+let bgmGain = null;
+let sfxGain = null;
+let bgmOscillators = [];
+let bgmPlaying = false;
+
+function initAudio() {
+    if (audioContext) return;
+    
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    bgmGain = audioContext.createGain();
+    bgmGain.gain.value = 0.15;
+    bgmGain.connect(audioContext.destination);
+    
+    sfxGain = audioContext.createGain();
+    sfxGain.gain.value = 0.3;
+    sfxGain.connect(audioContext.destination);
+}
+
+// Space-themed BGM - ambient synth pad
+function startBGM() {
+    if (bgmPlaying || !audioContext) return;
+    bgmPlaying = true;
+    
+    const now = audioContext.currentTime;
+    
+    // Create ambient pad layers
+    const frequencies = [55, 82.5, 110, 165]; // A1, E2, A2, E3 - spacey chord
+    
+    frequencies.forEach((freq, i) => {
+        const osc = audioContext.createOscillator();
+        const oscGain = audioContext.createGain();
+        const filter = audioContext.createBiquadFilter();
+        
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        
+        // Slight detune for richness
+        osc.detune.value = (Math.random() - 0.5) * 10;
+        
+        // Low pass filter for warmth
+        filter.type = 'lowpass';
+        filter.frequency.value = 400 + i * 100;
+        filter.Q.value = 1;
+        
+        // Slow fade in
+        oscGain.gain.setValueAtTime(0, now);
+        oscGain.gain.linearRampToValueAtTime(0.08 - i * 0.015, now + 3);
+        
+        // Subtle LFO modulation
+        const lfo = audioContext.createOscillator();
+        const lfoGain = audioContext.createGain();
+        lfo.frequency.value = 0.1 + Math.random() * 0.1;
+        lfo.type = 'sine';
+        lfoGain.gain.value = 2;
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc.detune);
+        lfo.start(now + i * 0.5);
+        bgmOscillators.push(lfo);
+        
+        osc.connect(filter);
+        filter.connect(oscGain);
+        oscGain.connect(bgmGain);
+        osc.start(now + i * 0.3);
+        bgmOscillators.push(osc);
+    });
+    
+    // Add higher ethereal tones
+    const highFreqs = [440, 554.37, 659.25]; // A4, C#5, E5
+    highFreqs.forEach((freq, i) => {
+        const osc = audioContext.createOscillator();
+        const oscGain = audioContext.createGain();
+        const filter = audioContext.createBiquadFilter();
+        
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        osc.detune.value = (Math.random() - 0.5) * 20;
+        
+        filter.type = 'bandpass';
+        filter.frequency.value = 800 + i * 200;
+        filter.Q.value = 2;
+        
+        oscGain.gain.setValueAtTime(0, now);
+        oscGain.gain.linearRampToValueAtTime(0.02, now + 5);
+        
+        osc.connect(filter);
+        filter.connect(oscGain);
+        oscGain.connect(bgmGain);
+        osc.start(now + 2 + i * 0.8);
+        bgmOscillators.push(osc);
+    });
+}
+
+function stopBGM() {
+    if (!bgmPlaying) return;
+    bgmPlaying = false;
+    
+    const now = audioContext.currentTime;
+    bgmOscillators.forEach(osc => {
+        try {
+            osc.stop(now + 0.5);
+        } catch (e) {}
+    });
+    bgmOscillators = [];
+}
+
+// Shoot sound - laser pew
+function playShootSound() {
+    if (!audioContext) return;
+    
+    const now = audioContext.currentTime;
+    
+    // Main laser tone
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(880, now);
+    osc.frequency.exponentialRampToValueAtTime(220, now + 0.1);
+    
+    filter.type = 'lowpass';
+    filter.frequency.value = 2000;
+    
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+    
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(sfxGain);
+    
+    osc.start(now);
+    osc.stop(now + 0.1);
+    
+    // Add a second harmonic
+    const osc2 = audioContext.createOscillator();
+    const gain2 = audioContext.createGain();
+    
+    osc2.type = 'square';
+    osc2.frequency.setValueAtTime(1320, now);
+    osc2.frequency.exponentialRampToValueAtTime(330, now + 0.08);
+    
+    gain2.gain.setValueAtTime(0.1, now);
+    gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+    
+    osc2.connect(gain2);
+    gain2.connect(sfxGain);
+    
+    osc2.start(now);
+    osc2.stop(now + 0.08);
+}
+
+// Explosion sound - impactful boom
+function playExplosionSound() {
+    if (!audioContext) return;
+    
+    const now = audioContext.currentTime;
+    
+    // Noise burst for impact
+    const bufferSize = audioContext.sampleRate * 0.3;
+    const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+    const data = buffer.getChannelData(0);
+    
+    for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.15));
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = buffer;
+    
+    const noiseGain = audioContext.createGain();
+    noiseGain.gain.setValueAtTime(0.4, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+    
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'lowpass';
+    noiseFilter.frequency.setValueAtTime(1000, now);
+    noiseFilter.frequency.exponentialRampToValueAtTime(100, now + 0.3);
+    
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(sfxGain);
+    
+    noise.start(now);
+    
+    // Low boom oscillator
+    const boom = audioContext.createOscillator();
+    const boomGain = audioContext.createGain();
+    
+    boom.type = 'sine';
+    boom.frequency.setValueAtTime(80, now);
+    boom.frequency.exponentialRampToValueAtTime(30, now + 0.2);
+    
+    boomGain.gain.setValueAtTime(0.5, now);
+    boomGain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+    
+    boom.connect(boomGain);
+    boomGain.connect(sfxGain);
+    
+    boom.start(now);
+    boom.stop(now + 0.25);
+    
+    // Mid punch
+    const punch = audioContext.createOscillator();
+    const punchGain = audioContext.createGain();
+    
+    punch.type = 'triangle';
+    punch.frequency.setValueAtTime(200, now);
+    punch.frequency.exponentialRampToValueAtTime(60, now + 0.15);
+    
+    punchGain.gain.setValueAtTime(0.3, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+    
+    punch.connect(punchGain);
+    punchGain.connect(sfxGain);
+    
+    punch.start(now);
+    punch.stop(now + 0.15);
+}
+
+// Powerup collect sound
+function playPowerupSound() {
+    if (!audioContext) return;
+    
+    const now = audioContext.currentTime;
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+    
+    notes.forEach((freq, i) => {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        
+        gain.gain.setValueAtTime(0, now + i * 0.08);
+        gain.gain.linearRampToValueAtTime(0.15, now + i * 0.08 + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.08 + 0.2);
+        
+        osc.connect(gain);
+        gain.connect(sfxGain);
+        
+        osc.start(now + i * 0.08);
+        osc.stop(now + i * 0.08 + 0.2);
+    });
+}
+
+// Player hit sound
+function playHitSound() {
+    if (!audioContext) return;
+    
+    const now = audioContext.currentTime;
+    
+    // Harsh noise burst
+    const bufferSize = audioContext.sampleRate * 0.2;
+    const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+    const data = buffer.getChannelData(0);
+    
+    for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.05));
+    }
+    
+    const noise = audioContext.createBufferSource();
+    noise.buffer = buffer;
+    
+    const noiseGain = audioContext.createGain();
+    noiseGain.gain.setValueAtTime(0.5, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+    
+    noise.connect(noiseGain);
+    noiseGain.connect(sfxGain);
+    
+    noise.start(now);
+    
+    // Dissonant tone
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(150, now);
+    osc.frequency.exponentialRampToValueAtTime(50, now + 0.2);
+    
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+    
+    osc.connect(gain);
+    gain.connect(sfxGain);
+    
+    osc.start(now);
+    osc.stop(now + 0.2);
+}
+
+// Game Over sound
+function playGameOverSound() {
+    if (!audioContext) return;
+    
+    const now = audioContext.currentTime;
+    const notes = [392, 349.23, 329.63, 293.66]; // G4, F4, E4, D4 - descending
+    
+    notes.forEach((freq, i) => {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        
+        osc.type = 'sawtooth';
+        osc.frequency.value = freq;
+        
+        gain.gain.setValueAtTime(0, now + i * 0.3);
+        gain.gain.linearRampToValueAtTime(0.2, now + i * 0.3 + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.3 + 0.3);
+        
+        osc.connect(gain);
+        gain.connect(sfxGain);
+        
+        osc.start(now + i * 0.3);
+        osc.stop(now + i * 0.3 + 0.35);
+    });
+}
+
 // Game Constants
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 720;
@@ -84,12 +405,14 @@ document.addEventListener('keydown', (e) => {
     keys[e.code] = true;
     
     if (gameState === GameState.TITLE && e.code === 'Space') {
+        initAudio();
         startGame();
     } else if (gameState === GameState.PLAYING && e.code === 'KeyP') {
         gameState = GameState.PAUSED;
     } else if (gameState === GameState.PAUSED && (e.code === 'KeyP' || e.code === 'Escape')) {
         gameState = GameState.PLAYING;
     } else if (gameState === GameState.GAMEOVER && e.code === 'Space') {
+        initAudio();
         startGame();
     } else if (gameState === GameState.PLAYING && e.code === 'KeyB') {
         useBomb();
@@ -194,6 +517,8 @@ function startGame() {
     enemies = [];
     powerups = [];
     explosions = [];
+    
+    startBGM();
 }
 
 function useBomb() {
@@ -219,6 +544,7 @@ function playerShoot() {
     if (player.shootCooldown > 0) return;
     
     player.shootCooldown = 8;
+    playShootSound();
     
     switch (player.powerLevel) {
         case 0:
@@ -379,6 +705,7 @@ function createExplosion(x, y, count = 12) {
             decay: Math.random() * 0.03 + 0.02
         });
     }
+    playExplosionSound();
 }
 
 function checkCollision(a, b) {
@@ -408,6 +735,7 @@ function playerHit() {
     player.powerLevel = Math.max(0, player.powerLevel - 1);
     
     createExplosion(player.x, player.y, 8);
+    playHitSound();
     
     if (player.lives <= 0) {
         gameOver();
@@ -416,6 +744,8 @@ function playerHit() {
 
 function gameOver() {
     gameState = GameState.GAMEOVER;
+    stopBGM();
+    playGameOverSound();
     if (score > highScore) {
         highScore = score;
         localStorage.setItem('1945_highscore', highScore);
@@ -644,6 +974,7 @@ function update() {
     // Collision: Powerups vs Player
     powerups.forEach((pu, i) => {
         if (checkCollision(pu, player)) {
+            playPowerupSound();
             switch (pu.type) {
                 case 'power':
                     player.powerLevel = Math.min(3, player.powerLevel + 1);
