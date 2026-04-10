@@ -431,64 +431,81 @@ document.addEventListener('keyup', (e) => {
 // MOBILE TOUCH CONTROLS
 // ============================================
 
+let touchTarget = { x: null, y: null };
+let isTouching = false;
+let bombIndicator = null;
+
 function setupMobileControls() {
-    const btnLeft = document.getElementById('btnLeft');
-    const btnRight = document.getElementById('btnRight');
-    const btnUp = document.getElementById('btnUp');
-    const btnDown = document.getElementById('btnDown');
-    const btnFire = document.getElementById('btnFire');
-    const btnBomb = document.getElementById('btnBomb');
+    // Get bomb indicator element
+    bombIndicator = document.getElementById('bombIndicator');
     
-    if (!btnFire) return;
-    
-    // Touch handlers
-    function addTouchHandler(btn, keyCode, keyCode2 = null) {
-        const activate = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            keys[keyCode] = true;
-            if (keyCode2) keys[keyCode2] = true;
-            btn.classList.add('active');
-        };
-        
-        const deactivate = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            keys[keyCode] = false;
-            if (keyCode2) keys[keyCode2] = false;
-            btn.classList.remove('active');
-        };
-        
-        btn.addEventListener('touchstart', activate, { passive: false });
-        btn.addEventListener('touchend', deactivate, { passive: false });
-        btn.addEventListener('touchcancel', deactivate, { passive: false });
-        btn.addEventListener('mousedown', activate);
-        btn.addEventListener('mouseup', deactivate);
-        btn.addEventListener('mouseleave', deactivate);
-    }
-    
-    addTouchHandler(btnLeft, 'ArrowLeft', 'KeyA');
-    addTouchHandler(btnRight, 'ArrowRight', 'KeyD');
-    addTouchHandler(btnUp, 'ArrowUp', 'KeyW');
-    addTouchHandler(btnDown, 'ArrowDown', 'KeyS');
-    addTouchHandler(btnFire, 'Space');
+    // Canvas touch for movement and shooting
+    canvas.addEventListener('touchstart', handleCanvasTouch, { passive: false });
+    canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
+    canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
+    canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: false });
     
     // Bomb button
-    btnBomb.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (gameState === GameState.PLAYING) useBomb();
-        btnBomb.classList.add('active');
-    }, { passive: false });
+    if (bombIndicator) {
+        bombIndicator.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (gameState === GameState.PLAYING) useBomb();
+            bombIndicator.style.background = 'rgba(255, 80, 80, 0.6)';
+        }, { passive: false });
+        
+        bombIndicator.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            bombIndicator.style.background = 'rgba(255, 80, 80, 0.25)';
+        }, { passive: false });
+        
+        bombIndicator.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            bombIndicator.style.background = 'rgba(255, 80, 80, 0.25)';
+        }, { passive: false });
+        
+        // Mouse support for testing on desktop
+        bombIndicator.addEventListener('mousedown', () => {
+            if (gameState === GameState.PLAYING) useBomb();
+        });
+    }
+}
+
+function handleCanvasTouch(e) {
+    e.preventDefault();
     
-    btnBomb.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        btnBomb.classList.remove('active');
-    }, { passive: false });
+    if (gameState === GameState.TITLE) {
+        initAudio();
+        startGame();
+        return;
+    }
     
-    btnBomb.addEventListener('mousedown', () => {
-        if (gameState === GameState.PLAYING) useBomb();
-    });
+    if (gameState !== GameState.PLAYING) return;
+    
+    isTouching = true;
+    updateTouchTarget(e.touches[0]);
+}
+
+function handleCanvasTouchMove(e) {
+    e.preventDefault();
+    if (gameState !== GameState.PLAYING || !isTouching) return;
+    updateTouchTarget(e.touches[0]);
+}
+
+function handleCanvasTouchEnd(e) {
+    e.preventDefault();
+    isTouching = false;
+    touchTarget.x = null;
+    touchTarget.y = null;
+}
+
+function updateTouchTarget(touch) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = GAME_WIDTH / rect.width;
+    const scaleY = GAME_HEIGHT / rect.height;
+    
+    touchTarget.x = (touch.clientX - rect.left) * scaleX;
+    touchTarget.y = (touch.clientY - rect.top) * scaleY;
 }
 
 // Initialize mobile controls
@@ -768,7 +785,7 @@ function update() {
         waveTimer = 0;
     }
     
-    // Player movement
+    // Player movement (keyboard)
     if (keys['ArrowLeft'] || keys['KeyA']) {
         player.x -= player.speed;
     }
@@ -780,6 +797,22 @@ function update() {
     }
     if (keys['ArrowDown'] || keys['KeyS']) {
         player.y += player.speed;
+    }
+    
+    // Player movement (touch)
+    if (isTouching && touchTarget.x !== null && touchTarget.y !== null) {
+        const dx = touchTarget.x - player.x;
+        const dy = touchTarget.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist > 10) {
+            const moveSpeed = Math.min(player.speed, dist);
+            player.x += (dx / dist) * moveSpeed;
+            player.y += (dy / dist) * moveSpeed;
+        }
+        
+        // Auto-fire while touching
+        playerShoot();
     }
     
     // Clamp player position
@@ -1228,6 +1261,10 @@ function drawExplosion(exp) {
     ctx.globalAlpha = 1;
 }
 
+function isTouchDevice() {
+    return ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+}
+
 function drawUI() {
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '16px "Press Start 2P", monospace';
@@ -1263,6 +1300,14 @@ function drawUI() {
     
     // Power level
     ctx.fillText(`PWR ${'★'.repeat(player.powerLevel + 1)}`, GAME_WIDTH - 100, GAME_HEIGHT - 25);
+    
+    // Update bomb indicator for mobile
+    if (bombIndicator) {
+        if (isTouchDevice()) {
+            bombIndicator.style.display = 'flex';
+            bombIndicator.innerHTML = `B<span style="font-size:9px;margin-left:2px">×${player.bombs}</span>`;
+        }
+    }
 }
 
 function drawTitleScreen() {
@@ -1303,7 +1348,11 @@ function drawTitleScreen() {
     if (Math.floor(frameCount / 30) % 2 === 0) {
         ctx.fillStyle = '#FFFFFF';
         ctx.font = '12px "Press Start 2P", monospace';
-        ctx.fillText('PRESS SPACE TO START', GAME_WIDTH / 2, 500);
+        if (isTouchDevice()) {
+            ctx.fillText('TAP TO START', GAME_WIDTH / 2, 500);
+        } else {
+            ctx.fillText('PRESS SPACE TO START', GAME_WIDTH / 2, 500);
+        }
     }
     
     // High score
