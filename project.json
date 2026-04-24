@@ -43,31 +43,16 @@
   "launch_checklist": {
     "source_control": {
       "provider": "github",
-      "connected": false,
-      "repo_name": null,
-      "branch_strategy": null,
-      "username": null
-    },
-    "infrastructure": {
-      "backend": null,
-      "frontend": null,
-      "database": null,
-      "combo": null
-    },
-    "build_history": [],
-    "test": {
-      "enabled": [],
-      "items": [],
-      "mode": "manual"
-    },
-    "docs": {
-      "enabled": [],
-      "synced_build": null
+      "connected": true,
+      "repo_name": "1945-game",
+      "branch_strategy": "main",
+      "username": "hamyung1234-commits"
     },
     "deploy": {
-      "domain_provider": null,
+      "domain_provider": "github-pages",
+      "url": "https://hamyung1234-commits.github.io/1945-game/",
       "ssl": "auto",
-      "cdn": null
+      "status": "live"
     },
     "monitor": {
       "monitoring": null,
