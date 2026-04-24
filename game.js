@@ -1609,12 +1609,11 @@ function drawGameOverScreen() {
 // ============================================
 
 function gameLoop() {
+    // Always increment frameCount for animations
+    frameCount++;
+    
     if (gameState === GameState.PLAYING) {
         update();
-    } else if (gameState === GameState.TITLE) {
-        frameCount++;
-    } else if (gameState === GameState.GAMEOVER) {
-        frameCount++;
     }
     
     // Clear
