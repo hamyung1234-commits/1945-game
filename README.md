@@ -1,7 +1,12 @@
 # 1945 Flying Tigers
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Play-Now-FFD700?style=for-the-badge" alt="Play Now">
+  <a href="https://hamyung1234-commits.github.io/1945-game/">
+    <img src="https://img.shields.io/badge/Play-Now-FFD700?style=for-the-badge" alt="Play Now">
+  </a>
+  <a href="https://hamyung1234-commits.github.io/1945-game/">
+    <img src="https://img.shields.io/badge/URL-hamyung1234.github.io/1945--game-4B7BF5?style=for-the-badge" alt="Game URL">
+  </a>
 </p>
 
 추억의 오락실 게임, 1945 비행기 슈팅 게임입니다! 🛩️
