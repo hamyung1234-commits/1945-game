@@ -436,72 +436,24 @@ let isTouching = false;
 let touchFirePressed = false;
 let fireBtn = null;
 let bombBtn = null;
-let leftBtn = null;
-let rightBtn = null;
-let upBtn = null;
-let downBtn = null;
-let touchDirPressed = { left: false, right: false, up: false, down: false };
+let bombIndicator = null;
+let controlsVisible = false;
+
+// Touch device detection
+function isTouchDevice() {
+    return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+}
 
 // Initialize mobile controls after DOM is ready
 function setupMobileControls() {
     // Get button elements
     fireBtn = document.getElementById('fireBtn');
     bombBtn = document.getElementById('bombBtn');
-    leftBtn = document.getElementById('leftBtn');
-    rightBtn = document.getElementById('rightBtn');
-    upBtn = document.getElementById('upBtn');
-    downBtn = document.getElementById('downBtn');
     
-    // Direction button handlers
-    function setupDirButton(btn, dir) {
-        if (!btn) {
-            console.warn('Button not found for direction:', dir);
-            return;
-        }
-        
-        btn.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            touchDirPressed[dir] = true;
-            btn.classList.add('pressed');
-        }, { passive: false });
-        
-        btn.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            touchDirPressed[dir] = false;
-            btn.classList.remove('pressed');
-        }, { passive: false });
-        
-        btn.addEventListener('touchcancel', (e) => {
-            e.preventDefault();
-            touchDirPressed[dir] = false;
-            btn.classList.remove('pressed');
-        }, { passive: false });
-        
-        // Mouse support
-        btn.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            touchDirPressed[dir] = true;
-            btn.classList.add('pressed');
-        });
-        
-        btn.addEventListener('mouseup', () => {
-            touchDirPressed[dir] = false;
-            btn.classList.remove('pressed');
-        });
-        
-        btn.addEventListener('mouseleave', () => {
-            touchDirPressed[dir] = false;
-            btn.classList.remove('pressed');
-        });
-    }
+    // Create on-screen buttons inside game area
+    createMobileButtons();
     
-    setupDirButton(leftBtn, 'left');
-    setupDirButton(rightBtn, 'right');
-    setupDirButton(upBtn, 'up');
-    setupDirButton(downBtn, 'down');
-    
-    // Canvas touch for movement
+    // Canvas touch for direct plane control
     canvas.addEventListener('touchstart', handleCanvasTouch, { passive: false });
     canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
     canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
@@ -537,7 +489,7 @@ function setupMobileControls() {
                     if (gameState === GameState.PLAYING) {
                         playerShoot();
                     }
-                }, 100);
+                }, 150);
             }
         }, { passive: false });
         
@@ -565,13 +517,7 @@ function setupMobileControls() {
         fireBtn.addEventListener('mousedown', (e) => {
             e.preventDefault();
             
-            if (gameState === GameState.TITLE) {
-                initAudio();
-                startGame();
-                return;
-            }
-            
-            if (gameState === GameState.GAMEOVER) {
+            if (gameState === GameState.TITLE || gameState === GameState.GAMEOVER) {
                 initAudio();
                 startGame();
                 return;
@@ -582,25 +528,15 @@ function setupMobileControls() {
                 fireBtn.classList.add('pressed');
                 playerShoot();
                 
-                // Start auto-fire
                 fireInterval = setInterval(() => {
                     if (gameState === GameState.PLAYING) {
                         playerShoot();
                     }
-                }, 100);
+                }, 150);
             }
         });
         
         fireBtn.addEventListener('mouseup', () => {
-            touchFirePressed = false;
-            fireBtn.classList.remove('pressed');
-            if (fireInterval) {
-                clearInterval(fireInterval);
-                fireInterval = null;
-            }
-        });
-        
-        fireBtn.addEventListener('mouseleave', () => {
             touchFirePressed = false;
             fireBtn.classList.remove('pressed');
             if (fireInterval) {
@@ -632,7 +568,7 @@ function setupMobileControls() {
             bombBtn.classList.remove('pressed');
         }, { passive: false });
         
-        // Mouse support for testing on desktop
+        // Mouse support
         bombBtn.addEventListener('mousedown', (e) => {
             e.preventDefault();
             
@@ -649,6 +585,13 @@ function setupMobileControls() {
         bombBtn.addEventListener('mouseleave', () => {
             bombBtn.classList.remove('pressed');
         });
+    }
+}
+
+function createMobileButtons() {
+    // Buttons are in HTML, just position them
+    if (fireBtn && bombBtn) {
+        controlsVisible = true;
     }
 }
 
@@ -986,33 +929,21 @@ function update() {
         player.y += player.speed;
     }
     
-    // Player movement (mobile direction buttons)
-    if (touchDirPressed.left) {
-        player.x -= player.speed;
-    }
-    if (touchDirPressed.right) {
-        player.x += player.speed;
-    }
-    if (touchDirPressed.up) {
-        player.y -= player.speed;
-    }
-    if (touchDirPressed.down) {
-        player.y += player.speed;
-    }
-    
-    // Player movement (touch)
+    // Player movement (touch - direct control)
     if (isTouching && touchTarget.x !== null && touchTarget.y !== null) {
         const dx = touchTarget.x - player.x;
         const dy = touchTarget.y - player.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         
         if (dist > 10) {
-            const moveSpeed = Math.min(player.speed, dist);
-            player.x += (dx / dist) * moveSpeed;
-            player.y += (dy / dist) * moveSpeed;
+            // Smooth movement toward touch point
+            player.x += dx * 0.15;
+            player.y += dy * 0.15;
         }
-        
-        // Auto-fire while touching
+    }
+    
+    // Auto-fire while touching
+    if (isTouching) {
         playerShoot();
     }
     
