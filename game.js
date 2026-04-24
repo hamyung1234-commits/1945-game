@@ -436,11 +436,66 @@ let isTouching = false;
 let touchFirePressed = false;
 let fireBtn = null;
 let bombBtn = null;
+let leftBtn = null;
+let rightBtn = null;
+let upBtn = null;
+let downBtn = null;
+let touchDirPressed = { left: false, right: false, up: false, down: false };
 
 function setupMobileControls() {
     // Get button elements
     fireBtn = document.getElementById('fireBtn');
     bombBtn = document.getElementById('bombBtn');
+    leftBtn = document.getElementById('leftBtn');
+    rightBtn = document.getElementById('rightBtn');
+    upBtn = document.getElementById('upBtn');
+    downBtn = document.getElementById('downBtn');
+    
+    // Direction button handlers
+    function setupDirButton(btn, dir) {
+        if (!btn) return;
+        
+        btn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            touchDirPressed[dir] = true;
+            btn.classList.add('pressed');
+        }, { passive: false });
+        
+        btn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            touchDirPressed[dir] = false;
+            btn.classList.remove('pressed');
+        }, { passive: false });
+        
+        btn.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            touchDirPressed[dir] = false;
+            btn.classList.remove('pressed');
+        }, { passive: false });
+        
+        // Mouse support
+        btn.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            touchDirPressed[dir] = true;
+            btn.classList.add('pressed');
+        });
+        
+        btn.addEventListener('mouseup', () => {
+            touchDirPressed[dir] = false;
+            btn.classList.remove('pressed');
+        });
+        
+        btn.addEventListener('mouseleave', () => {
+            touchDirPressed[dir] = false;
+            btn.classList.remove('pressed');
+        });
+    }
+    
+    setupDirButton(leftBtn, 'left');
+    setupDirButton(rightBtn, 'right');
+    setupDirButton(upBtn, 'up');
+    setupDirButton(downBtn, 'down');
     
     // Canvas touch for movement
     canvas.addEventListener('touchstart', handleCanvasTouch, { passive: false });
@@ -892,6 +947,20 @@ function update() {
         player.y -= player.speed;
     }
     if (keys['ArrowDown'] || keys['KeyS']) {
+        player.y += player.speed;
+    }
+    
+    // Player movement (mobile direction buttons)
+    if (touchDirPressed.left) {
+        player.x -= player.speed;
+    }
+    if (touchDirPressed.right) {
+        player.x += player.speed;
+    }
+    if (touchDirPressed.up) {
+        player.y -= player.speed;
+    }
+    if (touchDirPressed.down) {
         player.y += player.speed;
     }
     

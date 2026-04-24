@@ -24,9 +24,79 @@
   "conflicts": [],
   "design_tokens": [],
   "deployment_targets": [],
-  "discovery_state": "not_started",
+  "discovery_state": "in_progress",
   "discovery_completion_score": 0,
   "active_blueprint_view": "screen",
   "version": 1,
-  "last_saved_at": "2026-04-10T10:12:57.643Z"
+  "last_saved_at": "2026-04-24T04:48:02.618Z",
+  "directory": "C:\\Users\\aaas noh jang hyub\\BlueforgeProjects\\1945_게임",
+  "blueprint_versions": {
+    "counters": {
+      "S": 0,
+      "F": 0,
+      "A": 0,
+      "P": 0,
+      "D": 0
+    },
+    "snapshots": []
+  },
+  "launch_checklist": {
+    "source_control": {
+      "provider": "github",
+      "connected": false,
+      "repo_name": null,
+      "branch_strategy": null,
+      "username": null
+    },
+    "infrastructure": {
+      "backend": null,
+      "frontend": null,
+      "database": null,
+      "combo": null
+    },
+    "build_history": [],
+    "test": {
+      "enabled": [],
+      "items": [],
+      "mode": "manual"
+    },
+    "docs": {
+      "enabled": [],
+      "synced_build": null
+    },
+    "deploy": {
+      "domain_provider": null,
+      "ssl": "auto",
+      "cdn": null
+    },
+    "monitor": {
+      "monitoring": null,
+      "analytics": null,
+      "monitoring_config": null,
+      "analytics_config": null
+    },
+    "visual_design": {
+      "preset": null,
+      "colors": {
+        "primary": "#4B7BF5",
+        "secondary": "#64748b",
+        "accent": "#f59e0b",
+        "background": "#ffffff",
+        "surface": "#f8fafc",
+        "error": "#ef4444"
+      },
+      "typography": {
+        "heading": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono"
+      },
+      "logo": {
+        "path": null,
+        "name": null
+      },
+      "theme_mode": "system",
+      "border_radius": "md",
+      "figma_url": null
+    }
+  }
 }
