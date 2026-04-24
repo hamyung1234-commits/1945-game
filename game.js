@@ -503,8 +503,10 @@ function setupMobileControls() {
     canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
     canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: false });
     
-    // Fire button - single tap to fire once
+    // Fire button - auto-fire when held
     if (fireBtn) {
+        let fireInterval = null;
+        
         fireBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -525,6 +527,13 @@ function setupMobileControls() {
                 touchFirePressed = true;
                 fireBtn.classList.add('pressed');
                 playerShoot();
+                
+                // Start auto-fire
+                fireInterval = setInterval(() => {
+                    if (gameState === GameState.PLAYING) {
+                        playerShoot();
+                    }
+                }, 100);
             }
         }, { passive: false });
         
@@ -532,12 +541,20 @@ function setupMobileControls() {
             e.preventDefault();
             touchFirePressed = false;
             if (fireBtn) fireBtn.classList.remove('pressed');
+            if (fireInterval) {
+                clearInterval(fireInterval);
+                fireInterval = null;
+            }
         }, { passive: false });
         
         fireBtn.addEventListener('touchcancel', (e) => {
             e.preventDefault();
             touchFirePressed = false;
             if (fireBtn) fireBtn.classList.remove('pressed');
+            if (fireInterval) {
+                clearInterval(fireInterval);
+                fireInterval = null;
+            }
         }, { passive: false });
         
         // Mouse support for testing on desktop
@@ -560,17 +577,32 @@ function setupMobileControls() {
                 touchFirePressed = true;
                 fireBtn.classList.add('pressed');
                 playerShoot();
+                
+                // Start auto-fire
+                fireInterval = setInterval(() => {
+                    if (gameState === GameState.PLAYING) {
+                        playerShoot();
+                    }
+                }, 100);
             }
         });
         
         fireBtn.addEventListener('mouseup', () => {
             touchFirePressed = false;
             fireBtn.classList.remove('pressed');
+            if (fireInterval) {
+                clearInterval(fireInterval);
+                fireInterval = null;
+            }
         });
         
         fireBtn.addEventListener('mouseleave', () => {
             touchFirePressed = false;
             fireBtn.classList.remove('pressed');
+            if (fireInterval) {
+                clearInterval(fireInterval);
+                fireInterval = null;
+            }
         });
     }
     
