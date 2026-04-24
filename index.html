@@ -46,36 +46,55 @@
             line-height: 1.8;
         }
         
-        /* Bomb indicator */
-        #bombIndicator {
+        /* Mobile Control Buttons */
+        .mobile-controls {
             position: fixed;
             bottom: 20px;
             right: 20px;
-            width: 44px;
-            height: 44px;
-            background: rgba(255, 80, 80, 0.25);
-            border: 3px solid rgba(255, 80, 80, 0.6);
-            border-radius: 50%;
             display: none;
-            justify-content: center;
-            align-items: center;
-            color: rgba(255, 255, 255, 0.9);
-            font-size: 11px;
-            font-weight: bold;
-            pointer-events: auto;
-            user-select: none;
-            -webkit-user-select: none;
+            gap: 12px;
             z-index: 100;
         }
         
-        #bombIndicator:active {
-            background: rgba(255, 80, 80, 0.5);
-            transform: scale(0.95);
+        .control-btn {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 12px;
+            font-weight: bold;
+            user-select: none;
+            -webkit-user-select: none;
+            pointer-events: auto;
         }
         
-        /* Show bomb indicator on touch devices during gameplay */
+        #fireBtn {
+            background: rgba(255, 200, 0, 0.3);
+            border: 3px solid rgba(255, 200, 0, 0.7);
+            color: #FFD700;
+        }
+        
+        #fireBtn:active, #fireBtn.pressed {
+            background: rgba(255, 200, 0, 0.6);
+            transform: scale(0.92);
+        }
+        
+        #bombBtn {
+            background: rgba(255, 80, 80, 0.3);
+            border: 3px solid rgba(255, 80, 80, 0.7);
+            color: #FF6B6B;
+        }
+        
+        #bombBtn:active, #bombBtn.pressed {
+            background: rgba(255, 80, 80, 0.6);
+            transform: scale(0.92);
+        }
+        
+        /* Show controls on touch devices */
         @media (hover: none) and (pointer: coarse) {
-            #bombIndicator {
+            .mobile-controls {
                 display: flex;
             }
             #controls {
@@ -103,8 +122,11 @@
             MOVE: Arrow Keys / WASD | SHOOT: Space | BOMB: B | PAUSE: P
         </div>
         
-        <!-- Bomb indicator for mobile -->
-        <div id="bombIndicator">B</div>
+        <!-- Mobile Control Buttons -->
+        <div class="mobile-controls">
+            <button id="fireBtn" class="control-btn">FIRE</button>
+            <button id="bombBtn" class="control-btn">BOMB</button>
+        </div>
     </div>
     
     <script src="game.js"></script>

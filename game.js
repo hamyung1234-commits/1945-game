@@ -433,40 +433,130 @@ document.addEventListener('keyup', (e) => {
 
 let touchTarget = { x: null, y: null };
 let isTouching = false;
-let bombIndicator = null;
+let touchFirePressed = false;
+let fireBtn = null;
+let bombBtn = null;
 
 function setupMobileControls() {
-    // Get bomb indicator element
-    bombIndicator = document.getElementById('bombIndicator');
+    // Get button elements
+    fireBtn = document.getElementById('fireBtn');
+    bombBtn = document.getElementById('bombBtn');
     
-    // Canvas touch for movement and shooting
+    // Canvas touch for movement
     canvas.addEventListener('touchstart', handleCanvasTouch, { passive: false });
     canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
     canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
     canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: false });
     
-    // Bomb button
-    if (bombIndicator) {
-        bombIndicator.addEventListener('touchstart', (e) => {
+    // Fire button - single tap to fire once
+    if (fireBtn) {
+        fireBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (gameState === GameState.PLAYING) useBomb();
-            bombIndicator.style.background = 'rgba(255, 80, 80, 0.6)';
+            
+            if (gameState === GameState.TITLE) {
+                initAudio();
+                startGame();
+                return;
+            }
+            
+            if (gameState === GameState.GAMEOVER) {
+                initAudio();
+                startGame();
+                return;
+            }
+            
+            if (gameState === GameState.PLAYING) {
+                touchFirePressed = true;
+                fireBtn.classList.add('pressed');
+                playerShoot();
+            }
         }, { passive: false });
         
-        bombIndicator.addEventListener('touchend', (e) => {
+        fireBtn.addEventListener('touchend', (e) => {
             e.preventDefault();
-            bombIndicator.style.background = 'rgba(255, 80, 80, 0.25)';
+            touchFirePressed = false;
+            if (fireBtn) fireBtn.classList.remove('pressed');
         }, { passive: false });
         
-        bombIndicator.addEventListener('touchcancel', (e) => {
+        fireBtn.addEventListener('touchcancel', (e) => {
             e.preventDefault();
-            bombIndicator.style.background = 'rgba(255, 80, 80, 0.25)';
+            touchFirePressed = false;
+            if (fireBtn) fireBtn.classList.remove('pressed');
         }, { passive: false });
         
         // Mouse support for testing on desktop
-        bombIndicator.addEventListener('mousedown', () => {
-            if (gameState === GameState.PLAYING) useBomb();
+        fireBtn.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            
+            if (gameState === GameState.TITLE) {
+                initAudio();
+                startGame();
+                return;
+            }
+            
+            if (gameState === GameState.GAMEOVER) {
+                initAudio();
+                startGame();
+                return;
+            }
+            
+            if (gameState === GameState.PLAYING) {
+                touchFirePressed = true;
+                fireBtn.classList.add('pressed');
+                playerShoot();
+            }
+        });
+        
+        fireBtn.addEventListener('mouseup', () => {
+            touchFirePressed = false;
+            fireBtn.classList.remove('pressed');
+        });
+        
+        fireBtn.addEventListener('mouseleave', () => {
+            touchFirePressed = false;
+            fireBtn.classList.remove('pressed');
+        });
+    }
+    
+    // Bomb button
+    if (bombBtn) {
+        bombBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (gameState === GameState.PLAYING) {
+                useBomb();
+                bombBtn.classList.add('pressed');
+            }
+        }, { passive: false });
+        
+        bombBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            bombBtn.classList.remove('pressed');
+        }, { passive: false });
+        
+        bombBtn.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            bombBtn.classList.remove('pressed');
+        }, { passive: false });
+        
+        // Mouse support for testing on desktop
+        bombBtn.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            
+            if (gameState === GameState.PLAYING) {
+                useBomb();
+                bombBtn.classList.add('pressed');
+            }
+        });
+        
+        bombBtn.addEventListener('mouseup', () => {
+            bombBtn.classList.remove('pressed');
+        });
+        
+        bombBtn.addEventListener('mouseleave', () => {
+            bombBtn.classList.remove('pressed');
         });
     }
 }
@@ -475,6 +565,12 @@ function handleCanvasTouch(e) {
     e.preventDefault();
     
     if (gameState === GameState.TITLE) {
+        initAudio();
+        startGame();
+        return;
+    }
+    
+    if (gameState === GameState.GAMEOVER) {
         initAudio();
         startGame();
         return;
@@ -819,8 +915,12 @@ function update() {
     player.x = Math.max(player.width / 2, Math.min(GAME_WIDTH - player.width / 2, player.x));
     player.y = Math.max(player.height / 2, Math.min(GAME_HEIGHT - player.height / 2, player.y));
     
-    // Shooting
+    // Shooting (keyboard)
     if (keys['Space']) {
+        playerShoot();
+    }
+    // Shooting (mobile fire button)
+    if (touchFirePressed) {
         playerShoot();
     }
     if (player.shootCooldown > 0) player.shootCooldown--;
