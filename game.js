@@ -442,6 +442,7 @@ let upBtn = null;
 let downBtn = null;
 let touchDirPressed = { left: false, right: false, up: false, down: false };
 
+// Initialize mobile controls after DOM is ready
 function setupMobileControls() {
     // Get button elements
     fireBtn = document.getElementById('fireBtn');
@@ -453,7 +454,10 @@ function setupMobileControls() {
     
     // Direction button handlers
     function setupDirButton(btn, dir) {
-        if (!btn) return;
+        if (!btn) {
+            console.warn('Button not found for direction:', dir);
+            return;
+        }
         
         btn.addEventListener('touchstart', (e) => {
             e.preventDefault();
@@ -691,8 +695,8 @@ function updateTouchTarget(touch) {
     touchTarget.y = (touch.clientY - rect.top) * scaleY;
 }
 
-// Initialize mobile controls
-setupMobileControls();
+// Initialize mobile controls after DOM is ready
+document.addEventListener('DOMContentLoaded', setupMobileControls);
 
 // ============================================
 // GAME FUNCTIONS
@@ -1605,13 +1609,18 @@ function drawGameOverScreen() {
 // ============================================
 
 function gameLoop() {
-    update();
+    if (gameState === GameState.PLAYING) {
+        update();
+    } else if (gameState === GameState.TITLE) {
+        frameCount++;
+    } else if (gameState === GameState.GAMEOVER) {
+        frameCount++;
+    }
     
     // Clear
     ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     
     if (gameState === GameState.TITLE) {
-        frameCount++;
         drawTitleScreen();
     } else if (gameState === GameState.PLAYING) {
         drawBackground();
@@ -1636,7 +1645,6 @@ function gameLoop() {
         drawUI();
         drawPauseScreen();
     } else if (gameState === GameState.GAMEOVER) {
-        frameCount++;
         drawBackground();
         explosions.forEach(exp => drawExplosion(exp));
         drawGameOverScreen();
