@@ -40,6 +40,22 @@
             height: 100%;
         }
         
+        /* Joystick hint - shown on touch devices */
+        .joystick-hint {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            display: none;
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 8px;
+            pointer-events: none;
+            z-index: 5;
+        }
+        
+        body.touch-device .joystick-hint {
+            display: block;
+        }
+        
         /* Mobile Control Buttons */
         .mobile-controls {
             position: absolute;
@@ -132,6 +148,12 @@
                 width: 22px;
                 height: 22px;
             }
+            
+            .joystick-hint {
+                bottom: 15px;
+                left: 15px;
+                font-size: 7px;
+            }
         }
         
         @media (max-height: 750px) and (max-width: 520px) {
@@ -151,6 +173,9 @@
     </script>
     <div id="gameContainer">
         <canvas id="gameCanvas" width="480" height="720"></canvas>
+        
+        <!-- Joystick hint for touch devices -->
+        <div class="joystick-hint">◀ JOYSTICK ZONE</div>
         
         <!-- Mobile Control Buttons - positioned at bottom right inside container -->
         <div class="mobile-controls">

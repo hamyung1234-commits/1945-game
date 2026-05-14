@@ -1,45 +1,30 @@
-# Implementation Report: 1945 Game - Mobile Controls Fix
+# Implementation Report - Laser Fixes
 
 ## Completed Changes
 
-| File | Action | Summary |
-|------|--------|---------|
-| game.js | Modified | Added missing `bombIndicator` variable and `isTouchDevice()` function |
-| index.html | Rewritten | Added touch device detection, CSS rules for mobile controls |
+### 1. Laser Damage Fix (심각한 오류 #1)
+- **Before**: Laser damaged ALL enemies within a wide beam radius (25-49px), causing area damage
+- **After**: Laser only damages the single targeted enemy (nearest enemy)
+- Tick intervals: `[0, 35, 22, 14]` frames (slower, balanced)
+- Damage values: `[0, 0.2, 0.35, 0.55]` (60% of bullet power)
+- Each tick only damages `laserBeam.targetEnemy` (the nearest enemy)
 
-## What Was Fixed
+### 2. Laser Beam Visual Fix (심각한 오류 #2)
+- **Before**: Wide spring/electrical beam with large radius obscuring enemy bullets
+- **After**: Simple thin curved beam with subtle rubber band effect
+- 3 layers: outer glow (rgba 0.12), core beam (rgba 0.7), bright center (white)
+- Curve offset: max 30px, gentle sine wave oscillation
+- Small glow dot at impact point (2+level radius)
 
-### 1. game.js - Missing Variables/Functions
-- Added `bombIndicator = null` variable declaration (referenced in drawUI but missing)
-- Added `isTouchDevice()` function for touch device detection
+### 3. Joystick Verification (심각한 오류 #3)
+- `drawJoystick()` function exists at line 2229
+- Shows joystick base circle + stick + inner dot
+- Called in gameLoop for touch devices: `if (isTouchDevice()) { drawJoystick(); }`
+- Positioned at left side of screen (baseX=65, baseY=GAME_HEIGHT-80)
+- Active state: brighter colors, follows touch position
+- Inactive state: dimmed, default position
 
-### 2. index.html - Mobile Control Buttons
-- Added touch detection script in `<body>`:
-  ```javascript
-  if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
-      document.body.classList.add('touch-device');
-  }
-  ```
-- CSS: `.mobile-controls` only shows on `.touch-device` bodies
-- PC: Controls hidden by default
-- Mobile: Controls visible
-
-## Design Direction Applied
-- Style: Retro pixel (Press Start 2P font)
-- Mobile buttons: Gold for Fire (rgba(255,200,0)), Red for Bomb (rgba(255,60,60))
-- Position: Bottom-right inside game container
-
-## Verification Results
-- JavaScript syntax: Pass (node --check)
-- Browser: Page loaded at http://localhost:8888
-- Title shown: "1945 - Flying Tigers"
-- Canvas rendering: Working
-
-## Known Limitations
-- Cannot take browser screenshots (tool budget exhausted)
-- Physical mobile device testing recommended
-
-## Suggested Next Steps
-1. Test on actual mobile device
-2. Verify touch controls work as expected
-3. Adjust button positions if needed
+## Verification
+- Syntax check: PASS (`node --check game.js`)
+- Server running: `http://127.0.0.1:4003` (status 200)
+- All 3 fixes applied to game.js (76932 bytes)

@@ -28,78 +28,127 @@ function initAudio() {
     sfxGain.connect(audioContext.destination);
 }
 
-// Space-themed BGM - ambient synth pad
+// Space-themed BGM - intense battle music with bass and arpeggios
 function startBGM() {
     if (bgmPlaying || !audioContext) return;
     bgmPlaying = true;
     
     const now = audioContext.currentTime;
     
-    // Create ambient pad layers
-    const frequencies = [55, 82.5, 110, 165]; // A1, E2, A2, E3 - spacey chord
+    // === BASS LINE - driving rhythm ===
+    const bassNotes = [55, 55, 65.41, 55, 73.42, 65.41, 55, 49]; // A1 pattern
+    const bassDuration = 0.5; // 120 BPM
     
-    frequencies.forEach((freq, i) => {
+    bassNotes.forEach((freq, i) => {
+        const osc = audioContext.createOscillator();
+        const oscGain = audioContext.createGain();
+        const filter = audioContext.createBiquadFilter();
+        
+        osc.type = 'sawtooth';
+        osc.frequency.value = freq;
+        
+        filter.type = 'lowpass';
+        filter.frequency.value = 200;
+        filter.Q.value = 3;
+        
+        const startTime = now + i * bassDuration;
+        oscGain.gain.setValueAtTime(0, startTime);
+        oscGain.gain.linearRampToValueAtTime(0.12, startTime + 0.02);
+        oscGain.gain.exponentialRampToValueAtTime(0.01, startTime + bassDuration * 0.9);
+        
+        osc.connect(filter);
+        filter.connect(oscGain);
+        oscGain.connect(bgmGain);
+        osc.start(startTime);
+        osc.stop(startTime + bassDuration);
+        bgmOscillators.push(osc);
+    });
+    
+    // === PAD LAYER - tension chords ===
+    const padFreqs = [110, 138.59, 164.81]; // A2, C#3, E3 - A major
+    padFreqs.forEach((freq, i) => {
         const osc = audioContext.createOscillator();
         const oscGain = audioContext.createGain();
         const filter = audioContext.createBiquadFilter();
         
         osc.type = 'sine';
         osc.frequency.value = freq;
+        osc.detune.value = (Math.random() - 0.5) * 8;
         
-        // Slight detune for richness
-        osc.detune.value = (Math.random() - 0.5) * 10;
-        
-        // Low pass filter for warmth
         filter.type = 'lowpass';
-        filter.frequency.value = 400 + i * 100;
+        filter.frequency.value = 500;
         filter.Q.value = 1;
         
-        // Slow fade in
         oscGain.gain.setValueAtTime(0, now);
-        oscGain.gain.linearRampToValueAtTime(0.08 - i * 0.015, now + 3);
+        oscGain.gain.linearRampToValueAtTime(0.04, now + 2);
         
-        // Subtle LFO modulation
+        // LFO for tension
         const lfo = audioContext.createOscillator();
         const lfoGain = audioContext.createGain();
-        lfo.frequency.value = 0.1 + Math.random() * 0.1;
+        lfo.frequency.value = 0.15 + i * 0.05;
         lfo.type = 'sine';
-        lfoGain.gain.value = 2;
+        lfoGain.gain.value = 3;
         lfo.connect(lfoGain);
         lfoGain.connect(osc.detune);
-        lfo.start(now + i * 0.5);
+        lfo.start(now);
         bgmOscillators.push(lfo);
         
         osc.connect(filter);
         filter.connect(oscGain);
         oscGain.connect(bgmGain);
-        osc.start(now + i * 0.3);
+        osc.start(now + i * 0.5);
         bgmOscillators.push(osc);
     });
     
-    // Add higher ethereal tones
-    const highFreqs = [440, 554.37, 659.25]; // A4, C#5, E5
-    highFreqs.forEach((freq, i) => {
+    // === ARPEGGIO - fast high notes for urgency ===
+    const arpNotes = [440, 554.37, 659.25, 880, 659.25, 554.37]; // A4, C#5, E5, A5
+    const arpSpeed = 0.15;
+    
+    function playArpeggioLoop(startOffset) {
+        arpNotes.forEach((freq, i) => {
+            const osc = audioContext.createOscillator();
+            const oscGain = audioContext.createGain();
+            
+            osc.type = 'square';
+            osc.frequency.value = freq;
+            
+            const startTime = now + startOffset + i * arpSpeed;
+            oscGain.gain.setValueAtTime(0, startTime);
+            oscGain.gain.linearRampToValueAtTime(0.03, startTime + 0.01);
+            oscGain.gain.exponentialRampToValueAtTime(0.001, startTime + arpSpeed * 0.8);
+            
+            osc.connect(oscGain);
+            oscGain.connect(bgmGain);
+            osc.start(startTime);
+            osc.stop(startTime + arpSpeed);
+            bgmOscillators.push(osc);
+        });
+    }
+    
+    // Play arpeggio loop every 4 seconds
+    for (let loop = 0; loop < 50; loop++) {
+        playArpeggioLoop(loop * 4);
+    }
+    
+    // === PERCUSSION - subtle rhythmic pulse ===
+    for (let beat = 0; beat < 200; beat++) {
         const osc = audioContext.createOscillator();
         const oscGain = audioContext.createGain();
-        const filter = audioContext.createBiquadFilter();
         
         osc.type = 'sine';
-        osc.frequency.value = freq;
-        osc.detune.value = (Math.random() - 0.5) * 20;
+        osc.frequency.value = 80;
         
-        filter.type = 'bandpass';
-        filter.frequency.value = 800 + i * 200;
-        filter.Q.value = 2;
+        const startTime = now + beat * bassDuration;
+        oscGain.gain.setValueAtTime(0, startTime);
+        oscGain.gain.linearRampToValueAtTime(0.06, startTime + 0.005);
+        oscGain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.08);
         
-        oscGain.gain.setValueAtTime(0, now);
-        oscGain.gain.linearRampToValueAtTime(0.02, now + 5);
-        
-        osc.connect(filter);
-        filter.connect(oscGain);
+        osc.connect(oscGain);
         oscGain.connect(bgmGain);
-        osc.start(now + 2 + i * 0.8);
+        osc.start(startTime);
+        osc.stop(startTime + 0.1);
         bgmOscillators.push(osc);
-    });
+    }
 }
 
 function stopBGM() {
@@ -326,6 +375,71 @@ function playGameOverSound() {
     });
 }
 
+// Laser hum sound - continuous buzzing while laser fires
+let laserSoundActive = false;
+let laserOscillators = [];
+
+function playLaserSound() {
+    if (!audioContext || laserSoundActive) return;
+    laserSoundActive = true;
+    
+    const now = audioContext.currentTime;
+    
+    // Create a buzzing hum with multiple harmonics
+    for (let h = 0; h < 3; h++) {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        const filter = audioContext.createBiquadFilter();
+        const lfo = audioContext.createOscillator();
+        const lfoGain = audioContext.createGain();
+        
+        // Base frequencies for harmonics
+        const baseFreqs = [120, 180, 240];
+        
+        osc.type = 'sawtooth';
+        osc.frequency.value = baseFreqs[h];
+        
+        // LFO for warbling effect
+        lfo.frequency.value = 8 + h * 3;
+        lfo.type = 'sine';
+        lfoGain.gain.value = 30 + h * 10;
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc.frequency);
+        lfo.start(now);
+        laserOscillators.push(lfo);
+        
+        // Filter for buzz
+        filter.type = 'bandpass';
+        filter.frequency.value = 600 + h * 200;
+        filter.Q.value = 2;
+        
+        // Low volume - subtle hum
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.04 - h * 0.01, now + 0.05);
+        
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(sfxGain);
+        
+        osc.start(now);
+        laserOscillators.push(osc);
+    }
+}
+
+function stopLaserSound() {
+    if (!laserSoundActive) return;
+    laserSoundActive = false;
+    
+    const now = audioContext.currentTime;
+    laserOscillators.forEach(osc => {
+        try {
+            const gain = osc.context ? null : null;
+            osc.stop(now + 0.05);
+        } catch (e) {}
+    });
+    laserOscillators = [];
+}
+
 // Game Constants
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 720;
@@ -346,7 +460,18 @@ let score = 0;
 let highScore = parseInt(localStorage.getItem('1945_highscore')) || 0;
 let wave = 1;
 let waveTimer = 0;
+let waveFlash = null;
+let bossActive = false;
+let bossDefeated = false;
+let bossWaveNumber = 0;
+let bossBaseHP = 0;
 let frameCount = 0;
+let bossClawTimer = 0;
+let bossClawActive = false;
+let bossClawX = 0;
+let bossClawLength = 0;
+let bossClawMaxLength = 0;
+let bossClawRetracting = false;
 
 // Player
 const player = {
@@ -360,8 +485,12 @@ const player = {
     lives: 3,
     invincible: false,
     invincibleTimer: 0,
+    shieldActive: false,
+    shieldTimer: 0,
     shootCooldown: 0,
-    visible: true
+    visible: true,
+    vPowerActive: false,
+    vPowerTimer: 0
 };
 
 // Input
@@ -372,6 +501,9 @@ let playerBullets = [];
 let enemyBullets = [];
 let enemies = [];
 let powerups = [];
+let drones = [];
+let droneBullets = [];
+let laserBeams = [];
 let explosions = [];
 let stars = [];
 
@@ -394,6 +526,18 @@ const COLORS = {
     bullet: '#FFD700',
     enemyBullet: '#FF4444',
     powerup: '#00FF00',
+    powerupP: '#00FF00',
+    powerupB: '#FF8C00',
+    powerupS: '#00BFFF',
+    powerupD: '#FF69B4',
+    drone: '#FF69B4',
+    droneR: '#FF0000',
+    droneBullet: '#FFB6C1',
+    droneBulletR: '#FF4444',
+    powerupDR: '#FF0000',
+    powerupW: '#FFFFFF',
+    powerupV: '#888888',
+    laser: '#FFFFFF',
     explosion: ['#FF6B35', '#F7931E', '#FFD700', '#FFFFFF']
 };
 
@@ -439,6 +583,18 @@ let bombBtn = null;
 let bombIndicator = null;
 let controlsVisible = false;
 
+// Joystick state
+let joystickActive = false;
+let joystickId = null;
+let joystickBaseX = 0;
+let joystickBaseY = 0;
+let joystickStickX = 0;
+let joystickStickY = 0;
+let joystickDX = 0;
+let joystickDY = 0;
+const JOYSTICK_MAX_RADIUS = 40;
+const JOYSTICK_BASE_RADIUS = 50;
+
 // Touch device detection
 function isTouchDevice() {
     return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
@@ -453,7 +609,7 @@ function setupMobileControls() {
     // Create on-screen buttons inside game area
     createMobileButtons();
     
-    // Canvas touch for direct plane control
+    // Canvas touch for direct plane control AND joystick
     canvas.addEventListener('touchstart', handleCanvasTouch, { passive: false });
     canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
     canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
@@ -592,6 +748,13 @@ function createMobileButtons() {
     // Buttons are in HTML, just position them
     if (fireBtn && bombBtn) {
         controlsVisible = true;
+        bombIndicator = document.getElementById('bombIndicator');
+        if (!bombIndicator) {
+            bombIndicator = document.createElement('div');
+            bombIndicator.id = 'bombIndicator';
+            bombIndicator.style.cssText = 'position:absolute;bottom:25px;right:10px;color:#FF8C00;font-family:"Press Start 2P",monospace;font-size:10px;z-index:10;pointer-events:none;display:none';
+            document.getElementById('gameContainer').appendChild(bombIndicator);
+        }
     }
 }
 
@@ -612,21 +775,110 @@ function handleCanvasTouch(e) {
     
     if (gameState !== GameState.PLAYING) return;
     
-    isTouching = true;
-    updateTouchTarget(e.touches[0]);
+    // Process all touches
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = GAME_WIDTH / rect.width;
+        const scaleY = GAME_HEIGHT / rect.height;
+        const tx = (touch.clientX - rect.left) * scaleX;
+        const ty = (touch.clientY - rect.top) * scaleY;
+        
+        // Left side (30% of screen) = joystick zone
+        if (tx < GAME_WIDTH * 0.3 && !joystickActive) {
+            joystickActive = true;
+            joystickId = touch.identifier;
+            joystickBaseX = tx;
+            joystickBaseY = ty;
+            joystickStickX = tx;
+            joystickStickY = ty;
+            joystickDX = 0;
+            joystickDY = 0;
+        } else if (tx >= GAME_WIDTH * 0.3 && !isTouching) {
+            // Right side = direct plane control
+            isTouching = true;
+            touchTarget.x = tx;
+            touchTarget.y = ty;
+        }
+    }
 }
 
 function handleCanvasTouchMove(e) {
     e.preventDefault();
-    if (gameState !== GameState.PLAYING || !isTouching) return;
-    updateTouchTarget(e.touches[0]);
+    if (gameState !== GameState.PLAYING) return;
+    
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = GAME_WIDTH / rect.width;
+        const scaleY = GAME_HEIGHT / rect.height;
+        const tx = (touch.clientX - rect.left) * scaleX;
+        const ty = (touch.clientY - rect.top) * scaleY;
+        
+        // Update joystick
+        if (joystickActive && touch.identifier === joystickId) {
+            const dx = tx - joystickBaseX;
+            const dy = ty - joystickBaseY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            
+            if (dist > JOYSTICK_MAX_RADIUS) {
+                joystickStickX = joystickBaseX + (dx / dist) * JOYSTICK_MAX_RADIUS;
+                joystickStickY = joystickBaseY + (dy / dist) * JOYSTICK_MAX_RADIUS;
+            } else {
+                joystickStickX = tx;
+                joystickStickY = ty;
+            }
+            
+            joystickDX = (joystickStickX - joystickBaseX) / JOYSTICK_MAX_RADIUS;
+            joystickDY = (joystickStickY - joystickBaseY) / JOYSTICK_MAX_RADIUS;
+        }
+        
+        // Update direct touch
+        if (isTouching && tx >= GAME_WIDTH * 0.3) {
+            touchTarget.x = tx;
+            touchTarget.y = ty;
+        }
+    }
 }
 
 function handleCanvasTouchEnd(e) {
     e.preventDefault();
-    isTouching = false;
-    touchTarget.x = null;
-    touchTarget.y = null;
+    
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        
+        if (joystickActive && touch.identifier === joystickId) {
+            joystickActive = false;
+            joystickId = null;
+            joystickDX = 0;
+            joystickDY = 0;
+        }
+    }
+    
+    // Check if any remaining touches are on the right side
+    if (e.touches.length === 0) {
+        isTouching = false;
+        touchTarget.x = null;
+        touchTarget.y = null;
+    } else {
+        // Check remaining touches
+        let hasRightTouch = false;
+        for (let i = 0; i < e.touches.length; i++) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = GAME_WIDTH / rect.width;
+            const tx = (e.touches[i].clientX - rect.left) * scaleX;
+            if (tx >= GAME_WIDTH * 0.3) {
+                hasRightTouch = true;
+                touchTarget.x = tx;
+                touchTarget.y = (e.touches[i].clientY - rect.top) * (GAME_HEIGHT / rect.height);
+            }
+        }
+        if (!hasRightTouch) {
+            isTouching = false;
+            touchTarget.x = null;
+            touchTarget.y = null;
+        }
+    }
 }
 
 function updateTouchTarget(touch) {
@@ -639,7 +891,13 @@ function updateTouchTarget(touch) {
 }
 
 // Initialize mobile controls after DOM is ready
-document.addEventListener('DOMContentLoaded', setupMobileControls);
+// Initialize mobile controls - handle both async and sync loading
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupMobileControls);
+} else {
+    // DOM already loaded (script at end of body)
+    setupMobileControls();
+}
 
 // ============================================
 // GAME FUNCTIONS
@@ -658,12 +916,25 @@ function startGame() {
     player.bombs = 3;
     player.lives = 3;
     player.invincible = false;
+    player.shieldActive = false;
+    player.shieldTimer = 0;
+    player.vPowerActive = false;
+    player.vPowerTimer = 0;
     
     playerBullets = [];
     enemyBullets = [];
     enemies = [];
     powerups = [];
+    drones = [];
+    droneBullets = [];
     explosions = [];
+    laserBeams = [];
+    bossActive = false;
+    bossDefeated = false;
+    bossWaveNumber = 0;
+    bossClawTimer = 0;
+    bossClawActive = false;
+    bossClawRetracting = false;
     
     startBGM();
 }
@@ -672,12 +943,41 @@ function useBomb() {
     if (player.bombs > 0) {
         player.bombs--;
         
-        // Clear all enemies
-        enemies.forEach(enemy => {
-            createExplosion(enemy.x, enemy.y);
-            score += 10;
+        // Damage all enemies - boss takes 15% of max HP damage, others die
+        const enemiesToRemove = [];
+        enemies.forEach((enemy, ei) => {
+            if (enemy.isWaveBoss) {
+                // Boss takes 15% of max HP damage from bomb
+                const bombDamage = Math.floor(enemy.maxHp * 0.15);
+                enemy.hp -= bombDamage;
+                createExplosion(enemy.x, enemy.y, 20);
+                if (enemy.hp <= 0) {
+                    enemy.hp = 0;
+                    enemiesToRemove.push(ei);
+                }
+            } else {
+                createExplosion(enemy.x, enemy.y);
+                score += 10;
+                enemiesToRemove.push(ei);
+            }
         });
-        enemies = [];
+        
+        // Remove dead enemies (reverse order to preserve indices)
+        for (let i = enemiesToRemove.length - 1; i >= 0; i--) {
+            const idx = enemiesToRemove[i];
+            const enemy = enemies[idx];
+            if (enemy.hp <= 0 && enemy.isWaveBoss) {
+                score += enemy.score;
+                spawnPowerup(enemy.x, enemy.y);
+                bossActive = false;
+                bossDefeated = true;
+                player.lives = Math.min(5, player.lives + 1);
+                bossClawActive = false;
+                bossClawLength = 0;
+                bossClawTimer = 0;
+            }
+            enemies.splice(idx, 1);
+        }
         
         // Clear enemy bullets
         enemyBullets = [];
@@ -689,6 +989,8 @@ function useBomb() {
 
 function playerShoot() {
     if (player.shootCooldown > 0) return;
+    // Don't shoot bullets when laser is active (need green P to reactivate)
+    if (laserBeams.length > 0) return;
     
     player.shootCooldown = 8;
     playShootSound();
@@ -759,9 +1061,49 @@ function playerShoot() {
 }
 
 function spawnEnemy() {
-    const types = ['scout', 'scout', 'fighter', 'bomber'];
-    if (wave >= 3) types.push('fighter', 'bomber');
-    if (wave >= 5) types.push('boss');
+    // Boss wave check: every 10th wave (10, 20, 30... 100)
+    if (wave % 10 === 0 && !bossActive && !bossDefeated) {
+        bossActive = true;
+        bossWaveNumber = wave;
+        
+        // Boss HP: first boss = mid-boss * 3 (20+10*5=70, so 210)
+        // Each subsequent boss +30% from previous boss
+        const bossNumber = Math.floor(wave / 10); // 1st boss at wave 10, 2nd at 20...
+        const baseMidBossHP = 20 + 10 * 5; // mid-boss HP at wave 10 = 70
+        let bossHP = baseMidBossHP * 3; // 210 for first boss
+        for (let b = 1; b < bossNumber; b++) {
+            bossHP = Math.floor(bossHP * 1.3);
+        }
+        bossBaseHP = bossHP;
+        
+        const bossEnemy = {
+            x: GAME_WIDTH / 2,
+            y: -120,
+            width: 100,
+            height: 100,
+            type: 'boss',
+            hp: bossHP,
+            maxHp: bossHP,
+            speed: ENEMY_BASE_SPEED * 0.25,
+            score: 5000 + wave * 500,
+            shootCooldown: 15,
+            angle: 0,
+            phase: Math.random() * Math.PI * 2,
+            isWaveBoss: true
+        };
+        enemies.push(bossEnemy);
+        
+        // Show boss warning flash
+        waveFlash = { active: true, timer: 120, text: 'BOSS WAVE ' + wave };
+        return;
+    }
+    
+    // Spawn enemies slower during boss fight
+    if (bossActive && frameCount % 3 !== 0) return;
+    
+    const types = ['scout', 'scout', 'fighter', 'bomber', 'rammer'];
+    if (wave >= 3) types.push('fighter', 'bomber', 'rammer');
+    if (wave >= 5 && wave % 10 !== 0) types.push('boss');
     
     const type = types[Math.floor(Math.random() * types.length)];
     
@@ -816,15 +1158,33 @@ function spawnEnemy() {
             enemy.y = -100;
             enemy.shootCooldown = 20;
             break;
+        case 'rammer':
+            enemy.hp = 4 + wave;
+            enemy.maxHp = enemy.hp;
+            enemy.speed = ENEMY_BASE_SPEED * 0.864;
+            enemy.score = 400;
+            enemy.width = 48;
+            enemy.height = 48;
+            enemy.shootCooldown = 9999;
+            break;
     }
     
     enemies.push(enemy);
 }
 
-function spawnPowerup(x, y) {
-    if (Math.random() > 0.15) return;
+function spawnPowerup(x, y, isBossKill) {
+    if (Math.random() > 0.125 && !isBossKill) return;
     
-    const types = ['power', 'bomb', 'shield'];
+    let types;
+    if (isBossKill) {
+        // Boss kill: guaranteed V powerup + chance for others
+        types = ['powerV', 'powerV', 'powerV', 'power', 'powerW', 'bomb', 'shield'];
+    } else if (bossActive) {
+        // During boss fight: V powerup can appear but rarely
+        types = ['power', 'powerW', 'powerW', 'bomb', 'shield', 'drone', 'droneR', 'powerV'];
+    } else {
+        types = ['power', 'powerW', 'powerW', 'bomb', 'shield', 'drone', 'droneR'];
+    }
     const type = types[Math.floor(Math.random() * types.length)];
     
     powerups.push({
@@ -879,7 +1239,22 @@ function playerHit() {
     player.lives--;
     player.invincible = true;
     player.invincibleTimer = 120;
+    player.shieldActive = false;
+    
+    // Lose one laser beam when hit
+    if (laserBeams.length > 0) {
+        laserBeams.pop();
+        if (laserBeams.length === 0) {
+            stopLaserSound();
+        }
+    }
     player.powerLevel = Math.max(0, player.powerLevel - 1);
+    
+    // Remove one drone when hit
+    if (drones.length > 0) {
+        const removedDrone = drones.pop();
+        createExplosion(removedDrone.x, removedDrone.y, 6);
+    }
     
     createExplosion(player.x, player.y, 8);
     playHitSound();
@@ -909,10 +1284,13 @@ function update() {
     frameCount++;
     waveTimer++;
     
-    // Wave progression
+    // Wave progression - instant transition with flash
     if (waveTimer > 1800) {
         wave++;
         waveTimer = 0;
+        bossDefeated = false;
+        // Show wave number flash
+        waveFlash = { active: true, timer: 90, text: 'WAVE ' + wave };
     }
     
     // Player movement (keyboard)
@@ -927,6 +1305,12 @@ function update() {
     }
     if (keys['ArrowDown'] || keys['KeyS']) {
         player.y += player.speed;
+    }
+    
+    // Player movement (joystick)
+    if (joystickActive) {
+        player.x += joystickDX * player.speed;
+        player.y += joystickDY * player.speed;
     }
     
     // Player movement (touch - direct control)
@@ -961,7 +1345,7 @@ function update() {
     }
     if (player.shootCooldown > 0) player.shootCooldown--;
     
-    // Invincibility
+    // Invincibility (after hit)
     if (player.invincible) {
         player.invincibleTimer--;
         player.visible = Math.floor(player.invincibleTimer / 5) % 2 === 0;
@@ -971,6 +1355,71 @@ function update() {
         }
     }
     
+    // Shield timer
+    if (player.shieldActive) {
+        player.shieldTimer--;
+        if (player.shieldTimer <= 0) {
+            player.shieldActive = false;
+        }
+    }
+    
+    // V power timer
+    if (player.vPowerActive) {
+        player.vPowerTimer--;
+        if (player.vPowerTimer <= 0) {
+            player.vPowerActive = false;
+        }
+    }
+    
+    // Boss claw attack - 7 second interval
+    if (bossActive) {
+        if (!bossClawActive) {
+            bossClawTimer++;
+            if (bossClawTimer >= 420) { // 7 seconds at 60fps
+                const bossEnemy = enemies.find(e => e.isWaveBoss);
+                if (bossEnemy) {
+                    bossClawActive = true;
+                    bossClawTimer = 0;
+                    bossClawX = bossEnemy.x;
+                    bossClawLength = 0;
+                    bossClawMaxLength = GAME_HEIGHT * 0.66;
+                    bossClawRetracting = false;
+                }
+            }
+        }
+        if (bossClawActive) {
+            const clawSpeed = 12;
+            if (!bossClawRetracting) {
+                bossClawLength += clawSpeed;
+                if (bossClawLength >= bossClawMaxLength) {
+                    bossClawRetracting = true;
+                }
+            } else {
+                bossClawLength -= clawSpeed * 1.5;
+                if (bossClawLength <= 0) {
+                    bossClawLength = 0;
+                    bossClawActive = false;
+                    bossClawTimer = 0;
+                }
+            }
+            // Claw follows boss x position loosely
+            const bossEnemy = enemies.find(e => e.isWaveBoss);
+            if (bossEnemy) {
+                bossClawX += (bossEnemy.x - bossClawX) * 0.1;
+            }
+            // Check collision with player
+            const clawTipY = bossClawLength;
+            if (!player.invincible && !player.shieldActive) {
+                const dx = player.x - bossClawX;
+                const dy = player.y - clawTipY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 30) {
+                    playerHit();
+                }
+            }
+        }
+    }
+
     // Spawn enemies
     const spawnRate = Math.max(30, 90 - wave * 5);
     if (frameCount % spawnRate === 0) {
@@ -986,6 +1435,68 @@ function update() {
         }
     });
     
+    // Update laser beams - each beam targets different enemies
+    if (laserBeams.length > 0) {
+        // Sort enemies by distance from player (closest first)
+        const sortedEnemies = [...enemies].sort((a, b) => {
+            const da = Math.hypot(a.x - player.x, a.y - player.y);
+            const db = Math.hypot(b.x - player.x, b.y - player.y);
+            return da - db;
+        });
+        
+        const damagePerTick = player.vPowerActive ? 0.75 : 0.5;  // per-beam damage (+50% with V power)
+        const tickInterval = 16;     // frames between ticks
+        
+        laserBeams.forEach((beam, beamIdx) => {
+            // Assign target: round-robin through sorted enemies
+            if (sortedEnemies.length > 0) {
+                const enemyIdx = beamIdx % sortedEnemies.length;
+                const target = sortedEnemies[enemyIdx];
+                beam.targetX = target.x;
+                beam.targetY = target.y;
+                beam.targetEnemy = target;
+            } else {
+                beam.targetEnemy = null;
+            }
+            
+            // Damage tick
+            beam.tickTimer = (beam.tickTimer || 0) + 1;
+            if (beam.tickTimer >= tickInterval) {
+                beam.tickTimer = 0;
+                
+                if (beam.targetEnemy && enemies.includes(beam.targetEnemy)) {
+                    const enemy = beam.targetEnemy;
+                    enemy.hp -= damagePerTick;
+                    
+                    if (enemy.hp <= 0) {
+                        score += enemy.score;
+                        createExplosion(enemy.x, enemy.y);
+                        if (enemy.isWaveBoss) {
+                            // Boss defeated - spawn V powerup
+                            spawnPowerup(enemy.x, enemy.y, true);
+                            bossActive = false;
+                            bossDefeated = true;
+                            player.lives = Math.min(5, player.lives + 1);
+                            bossClawActive = false;
+                            bossClawLength = 0;
+                            bossClawTimer = 0;
+                        } else {
+                            spawnPowerup(enemy.x, enemy.y);
+                        }
+                        const idx = enemies.indexOf(enemy);
+                        if (idx >= 0) enemies.splice(idx, 1);
+                        beam.targetEnemy = null;
+                    }
+                }
+            }
+        });
+        
+        // Play laser hum sound while active
+        playLaserSound();
+    } else {
+        stopLaserSound();
+    }
+
     // Update player bullets
     playerBullets.forEach((bullet, i) => {
         bullet.y -= bullet.speed;
@@ -1031,6 +1542,16 @@ function update() {
                         });
                         enemy.shootCooldown = 60;
                     }
+                }
+                break;
+            case 'rammer':
+                // Chase the player - slow but persistent (speed +20%)
+                enemy.y += enemy.speed * 1.0;
+                const rdx = player.x - enemy.x;
+                const rdy = player.y - enemy.y;
+                const rdist = Math.sqrt(rdx * rdx + rdy * rdy);
+                if (rdist > 5) {
+                    enemy.x += (rdx / rdist) * enemy.speed * 0.72;
                 }
                 break;
             case 'boss':
@@ -1088,6 +1609,164 @@ function update() {
         }
     });
     
+    // Update drones
+    drones.forEach((drone, di) => {
+        // Follow player with offset
+        const targetX = player.x + drone.offsetX;
+        const targetY = player.y + drone.offsetY;
+        drone.x += (targetX - drone.x) * 0.15;
+        drone.y += (targetY - drone.y) * 0.15;
+        
+        // Drone shooting
+        drone.shootCooldown--;
+        if (drone.shootCooldown <= 0) {
+            if (drone.droneType === 'homing') {
+                // Red homing drone - slower fire rate, homing missiles
+                // Find nearest enemy to target
+                if (enemies.length > 0) {
+                    let nearestEnemy = null;
+                    let nearestDist = Infinity;
+                    enemies.forEach(enemy => {
+                        const dx = enemy.x - drone.x;
+                        const dy = enemy.y - drone.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < nearestDist) {
+                            nearestDist = dist;
+                            nearestEnemy = enemy;
+                        }
+                    });
+                    
+                    if (nearestEnemy) {
+                        const dx = nearestEnemy.x - drone.x;
+                        const dy = nearestEnemy.y - drone.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const speed = 4;
+                        droneBullets.push({
+                            x: drone.x,
+                            y: drone.y - 10,
+                            width: 5,
+                            height: 12,
+                            speed: speed,
+                            vx: (dx / dist) * speed,
+                            vy: (dy / dist) * speed,
+                            isHoming: true,
+                            targetEnemy: nearestEnemy,
+                            damage: 2,
+                            life: 180
+                        });
+                    }
+                }
+                drone.shootCooldown = 50 + Math.random() * 30;
+            } else {
+                // Normal pink drone - straight shot
+                droneBullets.push({
+                    x: drone.x,
+                    y: drone.y - 10,
+                    width: 3,
+                    height: 10,
+                    speed: BULLET_SPEED,
+                    isHoming: false,
+                    damage: 1
+                });
+                drone.shootCooldown = 20 + Math.random() * 20;
+            }
+        }
+    });
+    
+    // Update drone bullets
+    droneBullets.forEach((bullet, i) => {
+        if (bullet.isHoming) {
+            // Homing missile - track target enemy
+            bullet.life--;
+            if (bullet.life <= 0) {
+                droneBullets.splice(i, 1);
+                return;
+            }
+            
+            // Re-acquire target if lost
+            if (bullet.targetEnemy && !enemies.includes(bullet.targetEnemy)) {
+                // Find new nearest enemy
+                let nearestEnemy = null;
+                let nearestDist = Infinity;
+                enemies.forEach(enemy => {
+                    const dx = enemy.x - bullet.x;
+                    const dy = enemy.y - bullet.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        nearestEnemy = enemy;
+                    }
+                });
+                bullet.targetEnemy = nearestEnemy;
+            }
+            
+            // Steer toward target
+            if (bullet.targetEnemy) {
+                const dx = bullet.targetEnemy.x - bullet.x;
+                const dy = bullet.targetEnemy.y - bullet.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > 0) {
+                    const steerStrength = 0.08;
+                    bullet.vx += (dx / dist) * steerStrength * bullet.speed;
+                    bullet.vy += (dy / dist) * steerStrength * bullet.speed;
+                    
+                    // Normalize speed
+                    const currentSpeed = Math.sqrt(bullet.vx * bullet.vx + bullet.vy * bullet.vy);
+                    if (currentSpeed > 0) {
+                        bullet.vx = (bullet.vx / currentSpeed) * bullet.speed;
+                        bullet.vy = (bullet.vy / currentSpeed) * bullet.speed;
+                    }
+                }
+            }
+            
+            bullet.x += bullet.vx;
+            bullet.y += bullet.vy;
+            
+            // Remove if off screen
+            if (bullet.y < -50 || bullet.y > GAME_HEIGHT + 50 || bullet.x < -50 || bullet.x > GAME_WIDTH + 50) {
+                droneBullets.splice(i, 1);
+            }
+        } else {
+            bullet.y -= bullet.speed;
+            if (bullet.y < -20) {
+                droneBullets.splice(i, 1);
+            }
+        }
+    });
+    
+    // Collision: Drone bullets vs Enemies
+    droneBullets.forEach((bullet, bi) => {
+        if (bullet._hit) return;
+        enemies.forEach((enemy, ei) => {
+            if (bullet._hit) return;
+            if (checkCollision(bullet, enemy)) {
+                const dmg = (bullet.damage || 1) * (player.vPowerActive ? 1.5 : 1);
+                enemy.hp -= dmg;
+                bullet._hit = true;
+                droneBullets.splice(bi, 1);
+                
+                if (enemy.hp <= 0) {
+                    score += enemy.score;
+                    createExplosion(enemy.x, enemy.y);
+                    if (enemy.isWaveBoss) {
+                        spawnPowerup(enemy.x, enemy.y, true);
+                        bossActive = false;
+                        bossDefeated = true;
+                        player.lives = Math.min(5, player.lives + 1);
+                        bossClawActive = false;
+                        bossClawLength = 0;
+                        bossClawTimer = 0;
+                    } else {
+                        spawnPowerup(enemy.x, enemy.y);
+                    }
+                    enemies.splice(ei, 1);
+                } else {
+                    createExplosion(enemy.x, enemy.y, 4);
+                }
+            }
+        });
+    });
+    
     // Update explosions
     explosions.forEach((exp, i) => {
         exp.x += exp.vx;
@@ -1104,13 +1783,19 @@ function update() {
     playerBullets.forEach((bullet, bi) => {
         enemies.forEach((enemy, ei) => {
             if (checkCollision(bullet, enemy)) {
-                enemy.hp--;
+                enemy.hp -= player.vPowerActive ? 1.5 : 1;
                 playerBullets.splice(bi, 1);
                 
                 if (enemy.hp <= 0) {
                     score += enemy.score;
                     createExplosion(enemy.x, enemy.y);
-                    spawnPowerup(enemy.x, enemy.y);
+                    if (enemy.isWaveBoss) {
+                        spawnPowerup(enemy.x, enemy.y, true);
+                        bossActive = false;
+                        bossDefeated = true;
+                    } else {
+                        spawnPowerup(enemy.x, enemy.y);
+                    }
                     enemies.splice(ei, 1);
                 } else {
                     createExplosion(enemy.x, enemy.y, 4);
@@ -1124,7 +1809,14 @@ function update() {
         enemyBullets.forEach((bullet, bi) => {
             if (checkCollision(bullet, player)) {
                 enemyBullets.splice(bi, 1);
-                playerHit();
+                if (player.shieldActive) {
+                    // Shield absorbs the hit
+                    player.shieldActive = false;
+                    player.shieldTimer = 0;
+                    createExplosion(player.x, player.y, 6);
+                } else {
+                    playerHit();
+                }
             }
         });
     }
@@ -1135,7 +1827,14 @@ function update() {
             if (checkCollision(enemy, player)) {
                 createExplosion(enemy.x, enemy.y);
                 enemies.splice(ei, 1);
-                playerHit();
+                if (player.shieldActive) {
+                    // Shield absorbs the hit
+                    player.shieldActive = false;
+                    player.shieldTimer = 0;
+                    createExplosion(player.x, player.y, 6);
+                } else {
+                    playerHit();
+                }
             }
         });
     }
@@ -1147,13 +1846,97 @@ function update() {
             switch (pu.type) {
                 case 'power':
                     player.powerLevel = Math.min(3, player.powerLevel + 1);
+                    laserBeams = [];
+                    stopLaserSound();
+                    break;
+                case 'powerW':
+                    // White W - Laser weapon (up to 4 beams)
+                    player.powerLevel = 0;
+                    if (laserBeams.length < 4) {
+                        laserBeams.push({ tickTimer: 0 });
+                        playPowerupSound();
+                    }
                     break;
                 case 'bomb':
                     player.bombs = Math.min(5, player.bombs + 1);
                     break;
                 case 'shield':
-                    player.invincible = true;
-                    player.invincibleTimer = 180;
+                    player.shieldActive = true;
+                    player.shieldTimer = 600;
+                    break;
+                case 'drone':
+                    // Add a normal drone (pink) up to max 4 total
+                    if (drones.length < 4) {
+                        const sideOffsets = [-30, 30, -45, 45];
+                        const offsetIdx = drones.length;
+                        drones.push({
+                            x: player.x + sideOffsets[offsetIdx],
+                            y: player.y,
+                            side: offsetIdx % 2 === 0 ? 'left' : 'right',
+                            offsetX: sideOffsets[offsetIdx],
+                            offsetY: -10 - (Math.floor(offsetIdx / 2) * 15),
+                            width: 16,
+                            height: 16,
+                            shootCooldown: 0,
+                            droneType: 'normal'
+                        });
+                    } else {
+                        // At max drones, replace a homing drone with normal (prefer homing to replace)
+                        let replaced = false;
+                        for (let di = 0; di < drones.length; di++) {
+                            if (drones[di].droneType === 'homing') {
+                                drones[di].droneType = 'normal';
+                                drones[di].shootCooldown = 0;
+                                replaced = true;
+                                break;
+                            }
+                        }
+                        // If all are normal, replace the oldest
+                        if (!replaced && drones.length > 0) {
+                            drones[0].droneType = 'normal';
+                            drones[0].shootCooldown = 0;
+                        }
+                    }
+                    break;
+                case 'droneR':
+                    // Add a homing drone (red) up to max 4 total
+                    if (drones.length < 4) {
+                        const sideOffsets = [-30, 30, -45, 45];
+                        const offsetIdx = drones.length;
+                        drones.push({
+                            x: player.x + sideOffsets[offsetIdx],
+                            y: player.y,
+                            side: offsetIdx % 2 === 0 ? 'left' : 'right',
+                            offsetX: sideOffsets[offsetIdx],
+                            offsetY: -10 - (Math.floor(offsetIdx / 2) * 15),
+                            width: 16,
+                            height: 16,
+                            shootCooldown: 0,
+                            droneType: 'homing'
+                        });
+                    } else {
+                        // At max drones, replace oldest normal drone with homing drone
+                        // Prefer replacing normal drones over homing ones
+                        let replaced = false;
+                        for (let di = 0; di < drones.length; di++) {
+                            if (drones[di].droneType === 'normal') {
+                                drones[di].droneType = 'homing';
+                                drones[di].shootCooldown = 0;
+                                replaced = true;
+                                break;
+                            }
+                        }
+                        // If all are homing, replace the oldest homing
+                        if (!replaced && drones.length > 0) {
+                            drones[0].droneType = 'homing';
+                            drones[0].shootCooldown = 0;
+                        }
+                    }
+                    break;
+                case 'powerV':
+                    // Gray V - 5 seconds of +50% weapon power
+                    player.vPowerActive = true;
+                    player.vPowerTimer = 300; // 5 seconds at 60fps
                     break;
             }
             powerups.splice(i, 1);
@@ -1165,6 +1948,64 @@ function update() {
 // DRAWING FUNCTIONS
 // ============================================
 
+function drawLaserBeam() {
+    if (laserBeams.length === 0) return;
+    
+    const startX = player.x;
+    const startY = player.y - player.height / 2;
+    
+    laserBeams.forEach((beam, beamIdx) => {
+        if (!beam.targetEnemy) return;
+        
+        const endX = beam.targetX;
+        const endY = beam.targetY;
+        
+        ctx.save();
+        
+        // Slight rubber band curve (each beam has slightly different phase)
+        const dist = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
+        const midX = (startX + endX) / 2;
+        const midY = (startY + endY) / 2;
+        const curveOffset = Math.min(dist * 0.08, 30);
+        const perpX = -(endY - startY) / (dist || 1) * curveOffset;
+        const perpY = (endX - startX) / (dist || 1) * curveOffset;
+        const phase = frameCount * 0.03 + beamIdx * 1.5;
+        const ctrlX = midX + perpX * Math.sin(phase);
+        const ctrlY = midY + perpY * Math.sin(phase);
+        
+        // Outer subtle glow
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+        ctx.stroke();
+        
+        // Core beam
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+        ctx.stroke();
+        
+        // Bright center line
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+        ctx.stroke();
+        
+        // Small glow at impact point
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.beginPath();
+        ctx.arc(endX, endY, 4, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.restore();
+    });
+}
 function drawBackground() {
     // Gradient sky
     const gradient = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
@@ -1191,12 +2032,40 @@ function drawPlayer() {
     ctx.save();
     ctx.translate(player.x, player.y);
     
+    // V power effect - gray tint + color change
+    if (player.vPowerActive) {
+        ctx.globalAlpha = 0.7 + Math.sin(frameCount * 0.2) * 0.3;
+        // Override player colors to gray
+        ctx.fillStyle = '#888888';
+        ctx.strokeStyle = '#666666';
+    }
+    
+    // Shield bubble
+    if (player.shieldActive) {
+        ctx.strokeStyle = '#00BFFF';
+        ctx.lineWidth = 2;
+        ctx.shadowColor = '#00BFFF';
+        ctx.shadowBlur = 15;
+        ctx.globalAlpha = 0.6 + Math.sin(frameCount * 0.1) * 0.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 30, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        // Inner shield ring
+        ctx.globalAlpha = 0.3;
+        ctx.beginPath();
+        ctx.arc(0, 0, 26, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+    }
+    
     // Glow effect
     ctx.shadowColor = COLORS.player;
     ctx.shadowBlur = 15;
     
     // Main body
-    ctx.fillStyle = COLORS.playerBody;
+    if (!player.vPowerActive) ctx.fillStyle = COLORS.playerBody;
     ctx.beginPath();
     ctx.moveTo(0, -20);
     ctx.lineTo(-15, 15);
@@ -1208,18 +2077,18 @@ function drawPlayer() {
     ctx.fill();
     
     // Wings
-    ctx.fillStyle = '#4169E1';
+    if (!player.vPowerActive) ctx.fillStyle = '#4169E1';
     ctx.fillRect(-25, 0, 15, 8);
     ctx.fillRect(10, 0, 15, 8);
     
     // Cockpit
-    ctx.fillStyle = '#87CEEB';
+    if (!player.vPowerActive) ctx.fillStyle = '#87CEEB';
     ctx.beginPath();
     ctx.ellipse(0, -5, 5, 8, 0, 0, Math.PI * 2);
     ctx.fill();
     
     // Engine glow
-    ctx.fillStyle = COLORS.player;
+    if (!player.vPowerActive) ctx.fillStyle = COLORS.player;
     ctx.beginPath();
     ctx.moveTo(-5, 20);
     ctx.lineTo(0, 30 + Math.random() * 5);
@@ -1228,6 +2097,56 @@ function drawPlayer() {
     ctx.fill();
     
     ctx.shadowBlur = 0;
+    ctx.restore();
+}
+
+function drawBossClaw() {
+    if (!bossClawActive || bossClawLength <= 0) return;
+    
+    const startY = 0;
+    const endY = bossClawLength;
+    const x = bossClawX;
+    
+    ctx.save();
+    
+    // Main claw arm - metallic gray
+    ctx.strokeStyle = '#AAAAAA';
+    ctx.lineWidth = 4;
+    ctx.shadowColor = '#888888';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(x, startY);
+    ctx.lineTo(x, endY);
+    ctx.stroke();
+    
+    // Claw tip - pincer
+    const tipSize = 12;
+    ctx.fillStyle = '#CC0000';
+    ctx.shadowColor = '#FF0000';
+    ctx.shadowBlur = 6;
+    
+    // Left pincer
+    ctx.beginPath();
+    ctx.moveTo(x, endY);
+    ctx.lineTo(x - tipSize, endY + tipSize * 1.5);
+    ctx.lineTo(x - 3, endY + 3);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Right pincer
+    ctx.beginPath();
+    ctx.moveTo(x, endY);
+    ctx.lineTo(x + tipSize, endY + tipSize * 1.5);
+    ctx.lineTo(x + 3, endY + 3);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Glowing red tip
+    ctx.beginPath();
+    ctx.arc(x, endY, 7, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+    ctx.fill();
+    
     ctx.restore();
 }
 
@@ -1302,31 +2221,108 @@ function drawEnemy(enemy) {
             break;
             
         case 'boss':
-            // Large boss
-            ctx.fillStyle = '#660000';
+            // Large boss (wave boss is extra large)
+            const isWaveBoss = enemy.isWaveBoss || false;
+            const sizeMult = isWaveBoss ? 1.4 : 1;
+            
+            ctx.fillStyle = isWaveBoss ? '#880000' : '#660000';
             ctx.beginPath();
-            ctx.moveTo(0, 40);
-            ctx.lineTo(-35, 0);
-            ctx.lineTo(-40, -20);
-            ctx.lineTo(-20, -35);
-            ctx.lineTo(0, -25);
-            ctx.lineTo(20, -35);
-            ctx.lineTo(40, -20);
-            ctx.lineTo(35, 0);
+            ctx.moveTo(0, 40 * sizeMult);
+            ctx.lineTo(-35 * sizeMult, 0);
+            ctx.lineTo(-40 * sizeMult, -20 * sizeMult);
+            ctx.lineTo(-20 * sizeMult, -35 * sizeMult);
+            ctx.lineTo(0, -25 * sizeMult);
+            ctx.lineTo(20 * sizeMult, -35 * sizeMult);
+            ctx.lineTo(40 * sizeMult, -20 * sizeMult);
+            ctx.lineTo(35 * sizeMult, 0);
             ctx.closePath();
             ctx.fill();
             
             // Core
-            ctx.fillStyle = '#FF3333';
+            ctx.fillStyle = isWaveBoss ? '#FF6666' : '#FF3333';
             ctx.beginPath();
-            ctx.arc(0, 0, 15, 0, Math.PI * 2);
+            ctx.arc(0, 0, 15 * sizeMult, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Eyes for wave boss
+            if (isWaveBoss) {
+                ctx.fillStyle = '#FFFF00';
+                ctx.beginPath();
+                ctx.arc(-8 * sizeMult, -5 * sizeMult, 5, 0, Math.PI * 2);
+                ctx.arc(8 * sizeMult, -5 * sizeMult, 5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(-8 * sizeMult, -5 * sizeMult, 2, 0, Math.PI * 2);
+                ctx.arc(8 * sizeMult, -5 * sizeMult, 2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // HP bar (wider for wave boss)
+            const hpBarW = isWaveBoss ? 80 : 60;
+            const hpBarX = -hpBarW / 2;
+            ctx.fillStyle = '#333';
+            ctx.fillRect(hpBarX, -55 * sizeMult, hpBarW, 8);
+            const hpRatio = enemy.hp / enemy.maxHp;
+            ctx.fillStyle = hpRatio > 0.5 ? '#FF0000' : hpRatio > 0.25 ? '#FF6600' : '#FF0000';
+            ctx.fillRect(hpBarX, -55 * sizeMult, hpBarW * hpRatio, 8);
+            
+            // Boss name for wave boss
+            if (isWaveBoss) {
+                ctx.fillStyle = '#FFD700';
+                ctx.font = '8px "Press Start 2P", monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText('BOSS', 0, -62 * sizeMult);
+            }
+            break;
+            
+        case 'rammer':
+            // Propeller plane - chases player
+            // Fuselage
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(-8, -14, 16, 28);
+            
+            // Wings
+            ctx.fillStyle = '#A0522D';
+            ctx.beginPath();
+            ctx.moveTo(-22, -2);
+            ctx.lineTo(22, -2);
+            ctx.lineTo(16, 6);
+            ctx.lineTo(-16, 6);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Tail
+            ctx.fillStyle = '#8B4513';
+            ctx.beginPath();
+            ctx.moveTo(-14, 10);
+            ctx.lineTo(14, 10);
+            ctx.lineTo(6, 18);
+            ctx.lineTo(-6, 18);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Propeller (spinning)
+            ctx.save();
+            ctx.rotate(frameCount * 0.5);
+            ctx.fillStyle = '#444';
+            ctx.fillRect(-2, -12, 4, 24);
+            ctx.fillStyle = '#888';
+            ctx.fillRect(-12, -2, 24, 4);
+            ctx.restore();
+            
+            // Cockpit
+            ctx.fillStyle = '#87CEEB';
+            ctx.beginPath();
+            ctx.arc(0, -6, 6, 0, Math.PI * 2);
             ctx.fill();
             
             // HP bar
             ctx.fillStyle = '#333';
-            ctx.fillRect(-30, -45, 60, 8);
-            ctx.fillStyle = '#FF0000';
-            ctx.fillRect(-30, -45, 60 * (enemy.hp / enemy.maxHp), 8);
+            ctx.fillRect(-24, -28, 48, 4);
+            const rammerHpPct = enemy.hp / enemy.maxHp;
+            ctx.fillStyle = rammerHpPct > 0.5 ? '#00FF00' : rammerHpPct > 0.25 ? '#FFD700' : '#FF4444';
+            ctx.fillRect(-24, -28, 48 * rammerHpPct, 4);
             break;
     }
     
@@ -1358,10 +2354,46 @@ function drawPowerup(pu) {
     // Blinking effect
     ctx.globalAlpha = 0.5 + Math.sin(frameCount * 0.2) * 0.5;
     
-    ctx.shadowColor = COLORS.powerup;
+    // Different colors per type
+    let color, letter;
+    switch (pu.type) {
+        case 'power':
+            color = COLORS.powerupP;
+            letter = 'P';
+            break;
+        case 'powerW':
+            color = COLORS.powerupW;
+            letter = 'W';
+            break;
+        case 'bomb':
+            color = COLORS.powerupB;
+            letter = 'B';
+            break;
+        case 'shield':
+            color = COLORS.powerupS;
+            letter = 'S';
+            break;
+        case 'drone':
+            color = COLORS.powerupD;
+            letter = 'D';
+            break;
+        case 'droneR':
+            color = COLORS.powerupDR;
+            letter = 'D';
+            break;
+        case 'powerV':
+            color = COLORS.powerupV;
+            letter = 'V';
+            break;
+        default:
+            color = COLORS.powerup;
+            letter = '?';
+    }
+    
+    ctx.shadowColor = color;
     ctx.shadowBlur = 10;
     
-    ctx.fillStyle = COLORS.powerup;
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(0, 0, 12, 0, Math.PI * 2);
     ctx.fill();
@@ -1370,22 +2402,91 @@ function drawPowerup(pu) {
     ctx.font = 'bold 12px Arial';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    
-    switch (pu.type) {
-        case 'power':
-            ctx.fillText('P', 0, 1);
-            break;
-        case 'bomb':
-            ctx.fillText('B', 0, 1);
-            break;
-        case 'shield':
-            ctx.fillText('S', 0, 1);
-            break;
-    }
+    ctx.fillText(letter, 0, 1);
     
     ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;
     ctx.restore();
+}
+
+function drawDrone(drone) {
+    ctx.save();
+    ctx.translate(drone.x, drone.y);
+    
+    const isHoming = drone.droneType === 'homing';
+    const droneColor = isHoming ? COLORS.droneR : COLORS.drone;
+    const innerColor = isHoming ? '#FF6666' : '#FFB6C1';
+    const wingColor = isHoming ? '#CC0000' : '#FF1493';
+    
+    // Drone body - small diamond shape
+    ctx.shadowColor = droneColor;
+    ctx.shadowBlur = 8;
+    
+    ctx.fillStyle = droneColor;
+    ctx.beginPath();
+    ctx.moveTo(0, -8);
+    ctx.lineTo(-6, 0);
+    ctx.lineTo(0, 8);
+    ctx.lineTo(6, 0);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Inner glow
+    ctx.fillStyle = innerColor;
+    ctx.beginPath();
+    ctx.arc(0, 0, 3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Small wings
+    ctx.fillStyle = wingColor;
+    ctx.fillRect(-10, -2, 4, 4);
+    ctx.fillRect(6, -2, 4, 4);
+    
+    ctx.shadowBlur = 0;
+    ctx.restore();
+}
+
+function drawDroneBullet(bullet) {
+    if (bullet.isHoming) {
+        // Homing missile - red, larger, with trail
+        ctx.save();
+        ctx.translate(bullet.x, bullet.y);
+        
+        // Trail
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = '#FF4444';
+        ctx.beginPath();
+        ctx.arc(0, 0, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        
+        // Missile body
+        ctx.shadowColor = '#FF0000';
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = '#FF0000';
+        ctx.beginPath();
+        ctx.moveTo(0, -7);
+        ctx.lineTo(-4, 3);
+        ctx.lineTo(0, 5);
+        ctx.lineTo(4, 3);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Inner glow
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath();
+        ctx.arc(0, 0, 2, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    } else {
+        ctx.shadowColor = COLORS.droneBullet;
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = COLORS.droneBullet;
+        ctx.fillRect(bullet.x - bullet.width / 2, bullet.y - bullet.height / 2, bullet.width, bullet.height);
+        ctx.shadowBlur = 0;
+    }
 }
 
 function drawExplosion(exp) {
@@ -1397,11 +2498,70 @@ function drawExplosion(exp) {
     ctx.globalAlpha = 1;
 }
 
-function isTouchDevice() {
-    return ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+
+function drawJoystick() {
+    // For touch devices, always show joystick zone
+    if (!isTouchDevice()) return;
+    
+    const baseX = joystickActive ? joystickBaseX : 65;
+    const baseY = joystickActive ? joystickBaseY : GAME_HEIGHT - 80;
+    const stickX = joystickActive ? joystickStickX : baseX;
+    const stickY = joystickActive ? joystickStickY : baseY;
+    
+    ctx.save();
+    
+    // Base circle
+    ctx.globalAlpha = joystickActive ? 0.3 : 0.15;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(baseX, baseY, JOYSTICK_BASE_RADIUS, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fill();
+    
+    // Stick
+    ctx.globalAlpha = joystickActive ? 0.6 : 0.25;
+    ctx.fillStyle = '#FFD700';
+    ctx.beginPath();
+    ctx.arc(stickX, stickY, 20, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Inner dot
+    ctx.globalAlpha = joystickActive ? 0.9 : 0.4;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(stickX, stickY, 8, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.globalAlpha = 1;
+    ctx.restore();
 }
 
 function drawUI() {
+    // Wave flash display
+    if (waveFlash && waveFlash.active) {
+        const flashAlpha = waveFlash.timer > 60 ? 1 : (waveFlash.timer / 60);
+        const flashScale = 1 + (1 - flashAlpha) * 0.5;
+        
+        ctx.save();
+        ctx.globalAlpha = flashAlpha;
+        ctx.fillStyle = '#FFD700';
+        ctx.font = (48 * flashScale) + 'px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.shadowColor = '#FFD700';
+        ctx.shadowBlur = 20;
+        ctx.fillText(waveFlash.text, GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+        
+        waveFlash.timer--;
+        if (waveFlash.timer <= 0) {
+            waveFlash.active = false;
+        }
+    }
+    
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '16px "Press Start 2P", monospace';
     
@@ -1417,6 +2577,14 @@ function drawUI() {
     ctx.textAlign = 'center';
     ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillText(`WAVE ${wave}`, GAME_WIDTH / 2, 30);
+    
+    // V Power indicator
+    if (player.vPowerActive) {
+        const vSecLeft = Math.ceil(player.vPowerTimer / 60);
+        ctx.fillStyle = '#888888';
+        ctx.font = '8px "Press Start 2P", monospace';
+        ctx.fillText(`V-POWER ${vSecLeft}s`, GAME_WIDTH / 2, 48);
+    }
     
     // Lives
     ctx.textAlign = 'left';
@@ -1434,8 +2602,13 @@ function drawUI() {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillText(`BOMB x${player.bombs}`, 110, GAME_HEIGHT - 25);
     
-    // Power level
-    ctx.fillText(`PWR ${'★'.repeat(player.powerLevel + 1)}`, GAME_WIDTH - 100, GAME_HEIGHT - 25);
+    // Power level / Laser level
+    if (laserBeams.length > 0) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(`LSR ${'▌'.repeat(laserBeams.length)}`, GAME_WIDTH - 100, GAME_HEIGHT - 25);
+    } else {
+        ctx.fillText(`PWR ${'★'.repeat(player.powerLevel + 1)}`, GAME_WIDTH - 100, GAME_HEIGHT - 25);
+    }
     
     // Update bomb indicator for mobile
     if (bombIndicator) {
@@ -1552,6 +2725,7 @@ function gameLoop() {
     
     if (gameState === GameState.TITLE) {
         drawTitleScreen();
+        if (isTouchDevice()) { drawJoystick(); }
     } else if (gameState === GameState.PLAYING) {
         drawBackground();
         
@@ -1559,10 +2733,23 @@ function gameLoop() {
         powerups.forEach(pu => drawPowerup(pu));
         playerBullets.forEach(b => drawBullet(b, false));
         enemyBullets.forEach(b => drawBullet(b, true));
+        // Draw boss claw before enemies
+        drawBossClaw();
+        
         enemies.forEach(enemy => drawEnemy(enemy));
         explosions.forEach(exp => drawExplosion(exp));
         
         if (player.visible) drawPlayer();
+        if (laserBeams.length > 0) drawLaserBeam();
+        
+        // Draw drones
+        drones.forEach(d => drawDrone(d));
+        droneBullets.forEach(b => drawDroneBullet(b));
+        
+        // Draw joystick on touch devices (always show base)
+        if (isTouchDevice()) {
+            drawJoystick();
+        }
         
         drawUI();
     } else if (gameState === GameState.PAUSED) {
@@ -1570,13 +2757,18 @@ function gameLoop() {
         powerups.forEach(pu => drawPowerup(pu));
         playerBullets.forEach(b => drawBullet(b, false));
         enemyBullets.forEach(b => drawBullet(b, true));
+        drawBossClaw();
         enemies.forEach(enemy => drawEnemy(enemy));
         if (player.visible) drawPlayer();
+        drones.forEach(d => drawDrone(d));
+        droneBullets.forEach(b => drawDroneBullet(b));
+        if (isTouchDevice()) { drawJoystick(); }
         drawUI();
         drawPauseScreen();
     } else if (gameState === GameState.GAMEOVER) {
         drawBackground();
         explosions.forEach(exp => drawExplosion(exp));
+        if (isTouchDevice()) { drawJoystick(); }
         drawGameOverScreen();
     }
     

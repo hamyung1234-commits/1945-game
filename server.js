@@ -2,6 +2,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
+const PORT = 4000;
+
 const server = http.createServer((req, res) => {
     let filePath = req.url === '/' ? '/index.html' : req.url;
     filePath = path.join(__dirname, filePath);
@@ -24,6 +26,6 @@ const server = http.createServer((req, res) => {
     });
 });
 
-server.listen(8888, () => {
-    console.log('Server running on http://localhost:8888');
+server.listen(PORT, () => {
+    console.log('Server running on http://localhost:' + PORT);
 });
