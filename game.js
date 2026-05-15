@@ -528,7 +528,7 @@ const COLORS = {
     enemy: '#FF4444',
     enemy2: '#FF6B35',
     bullet: '#FFD700',
-    enemyBullet: '#4488FF',
+    enemyBullet: '#FF1493',
     powerup: '#00FF00',
     powerupP: '#00FF00',
     powerupB: '#FF8C00',
@@ -536,8 +536,8 @@ const COLORS = {
     powerupD: '#FF69B4',
     drone: '#FF69B4',
     droneR: '#FF0000',
-    droneBullet: '#4488FF',
-    droneBulletR: '#4488FF',
+    droneBullet: '#FF1493',
+    droneBulletR: '#FF1493',
     powerupDR: '#FF0000',
     powerupW: '#FFFFFF',
     powerupV: '#888888',
@@ -2523,10 +2523,26 @@ function drawBullet(bullet, isEnemy) {
     ctx.fillStyle = isEnemy ? COLORS.enemyBullet : COLORS.bullet;
     
     if (isEnemy) {
-        // Enemy bullet - circle
+        // Enemy bullet - fluorescent pink circle with glow
+        ctx.shadowColor = COLORS.enemyBullet;
+        ctx.shadowBlur = 14;
+        // Outer glow ring
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, bullet.width / 2 + 3, 0, Math.PI * 2);
+        ctx.fill();
+        // Core bright spot
+        ctx.shadowBlur = 20;
+        ctx.fillStyle = '#FF69B4';
         ctx.beginPath();
         ctx.arc(bullet.x, bullet.y, bullet.width / 2, 0, Math.PI * 2);
         ctx.fill();
+        // White hot center
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, bullet.width / 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = COLORS.enemyBullet;
     } else {
         // Player bullet - rectangle with glow
         ctx.shadowColor = COLORS.bullet;
@@ -2674,10 +2690,20 @@ function drawDroneBullet(bullet) {
         ctx.shadowBlur = 0;
         ctx.restore();
     } else {
+        // Fluorescent pink glow for drone bullets
         ctx.shadowColor = COLORS.droneBullet;
-        ctx.shadowBlur = 6;
+        ctx.shadowBlur = 16;
         ctx.fillStyle = COLORS.droneBullet;
+        // Outer glow
+        ctx.fillRect(bullet.x - bullet.width / 2 - 2, bullet.y - bullet.height / 2 - 2, bullet.width + 4, bullet.height + 4);
+        // Core
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = '#FF69B4';
         ctx.fillRect(bullet.x - bullet.width / 2, bullet.y - bullet.height / 2, bullet.width, bullet.height);
+        // White hot center
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(bullet.x - bullet.width / 4, bullet.y - bullet.height / 4, bullet.width / 2, bullet.height / 2);
         ctx.shadowBlur = 0;
     }
 }
