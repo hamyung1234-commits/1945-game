@@ -528,7 +528,7 @@ const COLORS = {
     enemy: '#FF4444',
     enemy2: '#FF6B35',
     bullet: '#FFD700',
-    enemyBullet: '#FFFF00',
+    enemyBullet: '#4488FF',
     powerup: '#00FF00',
     powerupP: '#00FF00',
     powerupB: '#FF8C00',
@@ -536,8 +536,8 @@ const COLORS = {
     powerupD: '#FF69B4',
     drone: '#FF69B4',
     droneR: '#FF0000',
-    droneBullet: '#FFFF00',
-    droneBulletR: '#FFFF00',
+    droneBullet: '#4488FF',
+    droneBulletR: '#4488FF',
     powerupDR: '#FF0000',
     powerupW: '#FFFFFF',
     powerupV: '#888888',
@@ -2356,7 +2356,7 @@ function drawEnemy(enemy) {
             ctx.lineTo(15, -15);
             ctx.closePath();
             ctx.fill();
-            ctx.fillStyle = '#FFFF00';
+            ctx.fillStyle = '#4488FF';
             ctx.beginPath();
             ctx.arc(0, 0, 6, 0, Math.PI * 2);
             ctx.fill();
@@ -2435,7 +2435,7 @@ function drawEnemy(enemy) {
             
             // Eyes for wave boss
             if (isWaveBoss) {
-                ctx.fillStyle = '#FFFF00';
+                ctx.fillStyle = '#4488FF';
                 ctx.beginPath();
                 ctx.arc(-8 * sizeMult, -5 * sizeMult, 5, 0, Math.PI * 2);
                 ctx.arc(8 * sizeMult, -5 * sizeMult, 5, 0, Math.PI * 2);
@@ -2647,7 +2647,7 @@ function drawDroneBullet(bullet) {
         
         // Trail
         ctx.globalAlpha = 0.3;
-        ctx.fillStyle = '#FFFF00';
+        ctx.fillStyle = '#4488FF';
         ctx.beginPath();
         ctx.arc(0, 0, 6, 0, Math.PI * 2);
         ctx.fill();
@@ -2656,7 +2656,7 @@ function drawDroneBullet(bullet) {
         // Missile body
         ctx.shadowColor = '#FF0000';
         ctx.shadowBlur = 10;
-        ctx.fillStyle = '#FFFF00';
+        ctx.fillStyle = '#4488FF';
         ctx.beginPath();
         ctx.moveTo(0, -7);
         ctx.lineTo(-4, 3);
@@ -2770,7 +2770,7 @@ function drawMissiles() {
         ctx.fill();
         
         // Flame (100% smaller = half of previous)
-        ctx.fillStyle = '#FFFF00';
+        ctx.fillStyle = '#4488FF';
         ctx.beginPath();
         ctx.moveTo(-5.25, 15);
         ctx.lineTo(0, 24 + Math.random() * 6.75);
@@ -2944,7 +2944,7 @@ function drawGameOverScreen() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
     ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     
-    ctx.fillStyle = '#FFFF00';
+    ctx.fillStyle = '#4488FF';
     ctx.font = '32px "Press Start 2P", monospace';
     ctx.textAlign = 'center';
     ctx.fillText('GAME OVER', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 50);
