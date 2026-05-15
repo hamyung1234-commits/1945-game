@@ -536,7 +536,7 @@ const COLORS = {
     powerupD: '#FF69B4',
     drone: '#FF69B4',
     droneR: '#FF0000',
-    droneBullet: '#FF1493',
+    droneBullet: '#4488FF',
     droneBulletR: '#FF1493',
     powerupDR: '#FF0000',
     powerupW: '#FFFFFF',
@@ -1185,7 +1185,7 @@ function spawnEnemy() {
 }
 
 function spawnPowerup(x, y, isBossKill) {
-    if (Math.random() > 0.125 && !isBossKill) return;
+    if (Math.random() > 0.053625 && !isBossKill) return;
     
     let types;
     if (isBossKill) {
@@ -2690,7 +2690,7 @@ function drawDroneBullet(bullet) {
         ctx.shadowBlur = 0;
         ctx.restore();
     } else {
-        // Fluorescent pink glow for drone bullets
+        // Blue glow for drone bullets
         ctx.shadowColor = COLORS.droneBullet;
         ctx.shadowBlur = 16;
         ctx.fillStyle = COLORS.droneBullet;
@@ -2698,7 +2698,7 @@ function drawDroneBullet(bullet) {
         ctx.fillRect(bullet.x - bullet.width / 2 - 2, bullet.y - bullet.height / 2 - 2, bullet.width + 4, bullet.height + 4);
         // Core
         ctx.shadowBlur = 10;
-        ctx.fillStyle = '#FF69B4';
+        ctx.fillStyle = '#66AAFF';
         ctx.fillRect(bullet.x - bullet.width / 2, bullet.y - bullet.height / 2, bullet.width, bullet.height);
         // White hot center
         ctx.shadowBlur = 0;
