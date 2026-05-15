@@ -504,6 +504,10 @@ let powerups = [];
 let drones = [];
 let droneBullets = [];
 let laserBeams = [];
+let missiles = [];
+let missileCooldown = 0;
+let missileDefenseCooldown = 0;
+let playerMissileLevel = 0;
 let explosions = [];
 let stars = [];
 
@@ -524,7 +528,7 @@ const COLORS = {
     enemy: '#FF4444',
     enemy2: '#FF6B35',
     bullet: '#FFD700',
-    enemyBullet: '#FF4444',
+    enemyBullet: '#FFFF00',
     powerup: '#00FF00',
     powerupP: '#00FF00',
     powerupB: '#FF8C00',
@@ -532,11 +536,12 @@ const COLORS = {
     powerupD: '#FF69B4',
     drone: '#FF69B4',
     droneR: '#FF0000',
-    droneBullet: '#FFB6C1',
-    droneBulletR: '#FF4444',
+    droneBullet: '#FFFF00',
+    droneBulletR: '#FFFF00',
     powerupDR: '#FF0000',
     powerupW: '#FFFFFF',
     powerupV: '#888888',
+    powerupM: '#FF6600',
     laser: '#FFFFFF',
     explosion: ['#FF6B35', '#F7931E', '#FFD700', '#FFFFFF']
 };
@@ -929,6 +934,10 @@ function startGame() {
     droneBullets = [];
     explosions = [];
     laserBeams = [];
+    missiles = [];
+    missileCooldown = 0;
+    missileDefenseCooldown = 0;
+    playerMissileLevel = 0;
     bossActive = false;
     bossDefeated = false;
     bossWaveNumber = 0;
@@ -989,11 +998,14 @@ function useBomb() {
 
 function playerShoot() {
     if (player.shootCooldown > 0) return;
-    // Don't shoot bullets when laser is active (need green P to reactivate)
-    if (laserBeams.length > 0) return;
+    // Block P bullets when lasers or missiles active
+    if (laserBeams.length > 0 || playerMissileLevel > 0) return;
     
     player.shootCooldown = 8;
     playShootSound();
+    
+    // // M missile weapon active - skip P bullets
+    if (playerMissileLevel > 0) return;
     
     switch (player.powerLevel) {
         case 0:
@@ -1146,7 +1158,7 @@ function spawnEnemy() {
             enemy.score = 300;
             enemy.width = 52;
             enemy.height = 52;
-            enemy.shootCooldown = 40;
+            enemy.shootCooldown = 120;
             break;
         case 'boss':
             enemy.hp = 20 + wave * 5;
@@ -1178,12 +1190,12 @@ function spawnPowerup(x, y, isBossKill) {
     let types;
     if (isBossKill) {
         // Boss kill: guaranteed V powerup + chance for others
-        types = ['powerV', 'powerV', 'powerV', 'power', 'powerW', 'bomb', 'shield'];
+        types = ['powerV', 'power', 'powerW', 'powerM', 'bomb', 'shield'];
     } else if (bossActive) {
         // During boss fight: V powerup can appear but rarely
-        types = ['power', 'powerW', 'powerW', 'bomb', 'shield', 'drone', 'droneR', 'powerV'];
+        types = ['powerV', 'power', 'powerW', 'powerM', 'powerW', 'powerW', 'bomb', 'bomb', 'shield', 'drone', 'droneR'];
     } else {
-        types = ['power', 'powerW', 'powerW', 'bomb', 'shield', 'drone', 'droneR'];
+        types = ['powerV', 'power', 'powerW', 'powerM', 'powerW', 'powerW', 'bomb', 'bomb', 'shield', 'drone', 'droneR'];
     }
     const type = types[Math.floor(Math.random() * types.length)];
     
@@ -1234,7 +1246,7 @@ function checkCollision(a, b) {
 }
 
 function playerHit() {
-    if (player.invincible) return;
+    if (player.invincible || player.vPowerActive) return;
     
     player.lives--;
     player.invincible = true;
@@ -1368,6 +1380,8 @@ function update() {
         player.vPowerTimer--;
         if (player.vPowerTimer <= 0) {
             player.vPowerActive = false;
+            player.invincible = false;
+            player.invincibleTimer = 0;
         }
     }
     
@@ -1444,7 +1458,7 @@ function update() {
             return da - db;
         });
         
-        const damagePerTick = player.vPowerActive ? 0.75 : 0.5;  // per-beam damage (+50% with V power)
+        const damagePerTick = player.vPowerActive ? 1.14 : 0.76;  // per-beam damage (+30% boost, +50% with V power)
         const tickInterval = 16;     // frames between ticks
         
         laserBeams.forEach((beam, beamIdx) => {
@@ -1538,9 +1552,9 @@ function update() {
                             y: enemy.y + enemy.height / 2,
                             width: 10,
                             height: 10,
-                            speed: 5
+                            speed: 2
                         });
-                        enemy.shootCooldown = 60;
+                        enemy.shootCooldown = 130;
                     }
                 }
                 break;
@@ -1561,17 +1575,15 @@ function update() {
                     enemy.x += Math.sin(enemy.phase * 0.5) * 2;
                     enemy.shootCooldown--;
                     if (enemy.shootCooldown <= 0) {
-                        // Spread shot
-                        for (let i = -2; i <= 2; i++) {
-                            enemyBullets.push({
-                                x: enemy.x + i * 15,
-                                y: enemy.y + enemy.height / 2,
-                                width: 12,
-                                height: 12,
-                                speed: 4 + Math.abs(i) * 0.5
-                            });
-                        }
-                        enemy.shootCooldown = Math.max(30, 60 - wave * 3);
+                        // 1-bullet shot (reduced from 2)
+                        enemyBullets.push({
+                            x: enemy.x,
+                            y: enemy.y + enemy.height / 2,
+                            width: 12,
+                            height: 12,
+                            speed: 2
+                        });
+                        enemy.shootCooldown = Math.max(60, 110 - wave * 4); // slower fire rate
                     }
                 }
                 break;
@@ -1589,7 +1601,7 @@ function update() {
                     y: enemy.y + enemy.height / 2,
                     width: 8,
                     height: 8,
-                    speed: 4 + wave * 0.3
+                    speed: 2 + wave * 0.15
                 });
                 enemy.shootCooldown = 60;
             }
@@ -1640,7 +1652,7 @@ function update() {
                         const dx = nearestEnemy.x - drone.x;
                         const dy = nearestEnemy.y - drone.y;
                         const dist = Math.sqrt(dx * dx + dy * dy);
-                        const speed = 4;
+                        const speed = 3;
                         droneBullets.push({
                             x: drone.x,
                             y: drone.y - 10,
@@ -1664,7 +1676,7 @@ function update() {
                     y: drone.y - 10,
                     width: 3,
                     height: 10,
-                    speed: BULLET_SPEED,
+                    speed: 1.5 + wave * 0.1,
                     isHoming: false,
                     damage: 1
                 });
@@ -1779,6 +1791,160 @@ function update() {
         }
     });
     
+    // Missile cooldowns (decrement every frame)
+    if (playerMissileLevel > 0) {
+        missileCooldown--;
+        if (playerMissileLevel >= 5) missileDefenseCooldown--;
+    }
+    
+    // === M MISSILE SHOOTING (fires every frame based on cooldown) ===
+    if (playerMissileLevel >= 1 && missileCooldown <= 0) {
+        missileCooldown = 90; // 1.5 seconds at 60fps
+        
+        // Level 1: 1 forward missile
+        missiles.push({ x: player.x, y: player.y - 10, vy: -4.5, vx: 0, homing: false, defensive: false, w: 12, h: 27 });
+        
+        if (playerMissileLevel >= 2) {
+            // Level 2: +2 side missiles
+            missiles.push({ x: player.x - 15, y: player.y - 5, vy: -4.5, vx: -0.3, homing: false, defensive: false, w: 12, h: 27 });
+            missiles.push({ x: player.x + 15, y: player.y - 5, vy: -4.5, vx: 0.3, homing: false, defensive: false, w: 12, h: 27 });
+        }
+        
+        if (playerMissileLevel >= 3) {
+            // Level 3: +1 left homing missile
+            missiles.push({ x: player.x - 22, y: player.y, vy: -3, vx: -1, homing: true, defensive: false, w: 12, h: 27 });
+        }
+        
+        if (playerMissileLevel >= 4) {
+            // Level 4: +1 right homing missile
+            missiles.push({ x: player.x + 22, y: player.y, vy: -3, vx: 1, homing: true, defensive: false, w: 12, h: 27 });
+        }
+    }
+    
+    // Defensive rear missile (level 5)
+    if (playerMissileLevel >= 5 && missileDefenseCooldown <= 0) {
+        missileDefenseCooldown = 120; // 2 seconds
+        missiles.push({ x: player.x, y: player.y + 15, vy: 3, vx: 0, homing: false, defensive: true, w: 12, h: 27 });
+    }
+    
+    // Missile update
+    for (let i = missiles.length - 1; i >= 0; i--) {
+        const m = missiles[i];
+        
+        if (m.homing && !m.defensive) {
+            // Homing: track nearest enemy
+            let closest = null, closestDist = Infinity;
+            enemies.forEach(e => {
+                const dx = e.x - m.x, dy = e.y - m.y;
+                const d = Math.sqrt(dx * dx + dy * dy);
+                if (d < closestDist) { closestDist = d; closest = e; }
+            });
+            if (closest) {
+                const tdx = closest.x - m.x, tdy = closest.y - m.y;
+                const td = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
+                m.vx += (tdx / td) * 0.18;
+                m.vy += (tdy / td) * 0.18;
+                const sp = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
+                if (sp > 5.25) { m.vx = m.vx / sp * 5.25; m.vy = m.vy / sp * 5.25; }
+            }
+        }
+        
+        if (m.defensive) {
+            // Defensive: track nearest enemy bullet
+            if (enemyBullets.length > 0) {
+                let closestBullet = enemyBullets[0];
+                let cbDist = Infinity;
+                enemyBullets.forEach(b => {
+                    const d = Math.hypot(b.x - m.x, b.y - m.y);
+                    if (d < cbDist) { cbDist = d; closestBullet = b; }
+                });
+                const tdx = closestBullet.x - m.x, tdy = closestBullet.y - m.y;
+                const td = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
+                m.vx = tdx / td * 2.5;
+                m.vy = tdy / td * 2.5;
+            }
+        }
+        
+        m.x += m.vx;
+        m.y += m.vy;
+        
+        // Remove if off screen
+        if (m.y < -30 || m.y > GAME_HEIGHT + 30 || m.x < -30 || m.x > GAME_WIDTH + 30) {
+            missiles.splice(i, 1);
+            continue;
+        }
+        
+        // Defensive missile: destroy enemy bullets on contact + splash
+        if (m.defensive) {
+            let hitBullet = false;
+            for (let bi = enemyBullets.length - 1; bi >= 0; bi--) {
+                const b = enemyBullets[bi];
+                const dx = m.x - b.x, dy = m.y - b.y;
+                if (Math.sqrt(dx * dx + dy * dy) < 25) {
+                    // Splash: destroy nearby bullets too
+                    for (let bj = enemyBullets.length - 1; bj >= 0; bj--) {
+                        const b2 = enemyBullets[bj];
+                        const d2 = Math.hypot(m.x - b2.x, m.y - b2.y);
+                        if (d2 < 110) { // wider defensive splash
+                            enemyBullets.splice(bj, 1);
+                        }
+                    }
+                    hitBullet = true;
+                    break;
+                }
+            }
+            if (hitBullet) {
+                createExplosion(m.x, m.y, 6);
+                missiles.splice(i, 1);
+                continue;
+            }
+        }
+        
+        // Missile vs Enemy collision - AABB checkCollision for reliable hits on all enemy types
+        let hitEnemy = false;
+        // Larger hitbox (44x44) ensures ALL enemy types are reliably hit every time
+        const missileHitbox = { x: m.x, y: m.y, width: 45, height: 45 };
+        for (let ei = enemies.length - 1; ei >= 0; ei--) {
+            const enemy = enemies[ei];
+            if (checkCollision(missileHitbox, enemy)) {
+                // Direct hit: 12.8 damage (same power applied to ALL enemy types)
+                const missileDamage = 25.6; // 100% power increase
+                enemy.hp -= missileDamage;
+                createExplosion(m.x, m.y, 8);
+                
+                // Splash damage to ALL nearby enemies (reverse iteration for safety)
+                for (let ej = enemies.length - 1; ej >= 0; ej--) {
+                    if (ej !== ei) {
+                        const e2 = enemies[ej];
+                        const d2 = Math.hypot(m.x - e2.x, m.y - e2.y);
+                        if (d2 < 140) { // wider splash radius
+                            e2.hp -= missileDamage * 0.5;
+                        }
+                    }
+                }
+                
+                // Proper enemy cleanup when killed by missile (score + powerup + removal)
+                if (enemy.hp <= 0) {
+                    score += enemy.score;
+                    createExplosion(enemy.x, enemy.y);
+                    if (enemy.isWaveBoss) {
+                        spawnPowerup(enemy.x, enemy.y, true);
+                        bossActive = false;
+                        bossDefeated = true;
+                    } else {
+                        spawnPowerup(enemy.x, enemy.y);
+                    }
+                    enemies.splice(ei, 1);
+                }
+                hitEnemy = true;
+                break;
+            }
+        }
+        if (hitEnemy) {
+            missiles.splice(i, 1);
+        }
+    }
+    
     // Collision: Player bullets vs Enemies
     playerBullets.forEach((bullet, bi) => {
         enemies.forEach((enemy, ei) => {
@@ -1845,14 +2011,20 @@ function update() {
             playPowerupSound();
             switch (pu.type) {
                 case 'power':
-                    player.powerLevel = Math.min(3, player.powerLevel + 1);
+                    player.powerLevel = Math.min(5, player.powerLevel + 1);
                     laserBeams = [];
                     stopLaserSound();
+                    // Clear missiles when switching to P bullets
+                    missiles = [];
+                    playerMissileLevel = 0;
                     break;
                 case 'powerW':
-                    // White W - Laser weapon (up to 4 beams)
+                    // White W - Laser weapon (up to 5 beams)
                     player.powerLevel = 0;
-                    if (laserBeams.length < 4) {
+                    // Clear missiles when switching to W laser
+                    missiles = [];
+                    playerMissileLevel = 0;
+                    if (laserBeams.length < 5) {
                         laserBeams.push({ tickTimer: 0 });
                         playPowerupSound();
                     }
@@ -1933,10 +2105,24 @@ function update() {
                         }
                     }
                     break;
+                case 'powerM':
+                    // Orange M - Missile weapon (up to 5 levels)
+                    playerMissileLevel = Math.min(5, playerMissileLevel + 1);
+                    // Clear other weapons - M replaces P bullets and W lasers
+                    laserBeams = [];
+                    stopLaserSound();
+                    player.powerLevel = 0;
+                    missiles = missiles; // keep missiles
+                    playPowerupSound();
+                    break;
                 case 'powerV':
                     // Gray V - 5 seconds of +50% weapon power
                     player.vPowerActive = true;
                     player.vPowerTimer = 300; // 5 seconds at 60fps
+                    player.invincible = true;
+                    player.invincibleTimer = 300; // 5s invincibility
+                    player.shieldActive = false; // no separate shield during V-power
+                    playPowerupSound();
                     break;
             }
             powerups.splice(i, 1);
@@ -2034,10 +2220,13 @@ function drawPlayer() {
     
     // V power effect - gray tint + color change
     if (player.vPowerActive) {
-        ctx.globalAlpha = 0.7 + Math.sin(frameCount * 0.2) * 0.3;
-        // Override player colors to gray
-        ctx.fillStyle = '#888888';
-        ctx.strokeStyle = '#666666';
+        // Blinking effect
+        ctx.globalAlpha = 0.5 + Math.sin(frameCount * 0.3) * 0.5;
+        // Override player colors to gray/silver
+        ctx.fillStyle = '#AAAAAA';
+        ctx.strokeStyle = '#888888';
+        // Bigger plane during V-power
+        ctx.scale(1.3, 1.3);
     }
     
     // Shield bubble
@@ -2167,7 +2356,7 @@ function drawEnemy(enemy) {
             ctx.lineTo(15, -15);
             ctx.closePath();
             ctx.fill();
-            ctx.fillStyle = '#FF4444';
+            ctx.fillStyle = '#FFFF00';
             ctx.beginPath();
             ctx.arc(0, 0, 6, 0, Math.PI * 2);
             ctx.fill();
@@ -2385,6 +2574,10 @@ function drawPowerup(pu) {
             color = COLORS.powerupV;
             letter = 'V';
             break;
+        case 'powerM':
+            color = COLORS.powerupM;
+            letter = 'M';
+            break;
         default:
             color = COLORS.powerup;
             letter = '?';
@@ -2454,7 +2647,7 @@ function drawDroneBullet(bullet) {
         
         // Trail
         ctx.globalAlpha = 0.3;
-        ctx.fillStyle = '#FF4444';
+        ctx.fillStyle = '#FFFF00';
         ctx.beginPath();
         ctx.arc(0, 0, 6, 0, Math.PI * 2);
         ctx.fill();
@@ -2463,7 +2656,7 @@ function drawDroneBullet(bullet) {
         // Missile body
         ctx.shadowColor = '#FF0000';
         ctx.shadowBlur = 10;
-        ctx.fillStyle = '#FF0000';
+        ctx.fillStyle = '#FFFF00';
         ctx.beginPath();
         ctx.moveTo(0, -7);
         ctx.lineTo(-4, 3);
@@ -2539,6 +2732,63 @@ function drawJoystick() {
     ctx.restore();
 }
 
+function drawMissiles() {
+    missiles.forEach(m => {
+        ctx.save();
+        ctx.translate(m.x, m.y);
+        
+        // Rotate based on velocity direction
+        const angle = Math.atan2(m.vy, m.vx) + Math.PI / 2;
+        ctx.rotate(angle);
+        
+        // Missile body (50% bigger = 188% total from original)
+        ctx.fillStyle = '#FF6600';
+        ctx.fillRect(-13.5, -30, 27, 60);
+        
+        // Missile nose cone (50% bigger than previous)
+        ctx.fillStyle = '#FF3300';
+        ctx.beginPath();
+        ctx.moveTo(0, -40.5);
+        ctx.lineTo(-13.5, -20);
+        ctx.lineTo(13.5, -20);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Fins (50% bigger than previous)
+        ctx.fillStyle = '#CC4400';
+        ctx.beginPath();
+        ctx.moveTo(-13.5, 20);
+        ctx.lineTo(-27, 30);
+        ctx.lineTo(-13.5, 30);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(13.5, 20);
+        ctx.lineTo(27, 30);
+        ctx.lineTo(13.5, 30);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Flame (50% bigger than previous)
+        ctx.fillStyle = '#FFFF00';
+        ctx.beginPath();
+        ctx.moveTo(-10.5, 30);
+        ctx.lineTo(0, 48 + Math.random() * 13.5);
+        ctx.lineTo(10.5, 30);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Glow (50% bigger than previous)
+        ctx.shadowColor = '#FF6600';
+        ctx.shadowBlur = 27;
+        ctx.fillStyle = 'rgba(255, 102, 0, 0.3)';
+        ctx.fillRect(-13.5, -30, 27, 60);
+        ctx.shadowBlur = 0;
+        
+        ctx.restore();
+    });
+}
+
 function drawUI() {
     // Wave flash display
     if (waveFlash && waveFlash.active) {
@@ -2608,6 +2858,13 @@ function drawUI() {
         ctx.fillText(`LSR ${'▌'.repeat(laserBeams.length)}`, GAME_WIDTH - 100, GAME_HEIGHT - 25);
     } else {
         ctx.fillText(`PWR ${'★'.repeat(player.powerLevel + 1)}`, GAME_WIDTH - 100, GAME_HEIGHT - 25);
+    }
+    
+    // Missile level indicator
+    if (playerMissileLevel > 0) {
+        ctx.fillStyle = '#FF6600';
+        ctx.font = '8px "Press Start 2P", monospace';
+        ctx.fillText(`MSL ${'▶'.repeat(playerMissileLevel)}`, GAME_WIDTH - 100, GAME_HEIGHT - 40);
     }
     
     // Update bomb indicator for mobile
@@ -2687,7 +2944,7 @@ function drawGameOverScreen() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
     ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     
-    ctx.fillStyle = '#FF4444';
+    ctx.fillStyle = '#FFFF00';
     ctx.font = '32px "Press Start 2P", monospace';
     ctx.textAlign = 'center';
     ctx.fillText('GAME OVER', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 50);
@@ -2741,6 +2998,7 @@ function gameLoop() {
         
         if (player.visible) drawPlayer();
         if (laserBeams.length > 0) drawLaserBeam();
+        drawMissiles();
         
         // Draw drones
         drones.forEach(d => drawDrone(d));
