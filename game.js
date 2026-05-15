@@ -1903,12 +1903,12 @@ function update() {
         // Missile vs Enemy collision - AABB checkCollision for reliable hits on all enemy types
         let hitEnemy = false;
         // Larger hitbox (44x44) ensures ALL enemy types are reliably hit every time
-        const missileHitbox = { x: m.x, y: m.y, width: 45, height: 45 };
+        const missileHitbox = { x: m.x, y: m.y, width: 24, height: 24 };
         for (let ei = enemies.length - 1; ei >= 0; ei--) {
             const enemy = enemies[ei];
             if (checkCollision(missileHitbox, enemy)) {
                 // Direct hit: 12.8 damage (same power applied to ALL enemy types)
-                const missileDamage = 25.6; // 100% power increase
+                const missileDamage = 15.36; // 40% power reduction from 25.6
                 enemy.hp -= missileDamage;
                 createExplosion(m.x, m.y, 8);
                 
@@ -2741,48 +2741,48 @@ function drawMissiles() {
         const angle = Math.atan2(m.vy, m.vx) + Math.PI / 2;
         ctx.rotate(angle);
         
-        // Missile body (50% bigger = 188% total from original)
+        // Missile body (100% smaller = half of previous)
         ctx.fillStyle = '#FF6600';
-        ctx.fillRect(-13.5, -30, 27, 60);
+        ctx.fillRect(-6.75, -15, 13.5, 30);
         
-        // Missile nose cone (50% bigger than previous)
+        // Missile nose cone (100% smaller = half of previous)
         ctx.fillStyle = '#FF3300';
         ctx.beginPath();
-        ctx.moveTo(0, -40.5);
-        ctx.lineTo(-13.5, -20);
-        ctx.lineTo(13.5, -20);
+        ctx.moveTo(0, -20.25);
+        ctx.lineTo(-6.75, -10);
+        ctx.lineTo(6.75, -10);
         ctx.closePath();
         ctx.fill();
         
-        // Fins (50% bigger than previous)
+        // Fins (100% smaller = half of previous)
         ctx.fillStyle = '#CC4400';
         ctx.beginPath();
-        ctx.moveTo(-13.5, 20);
-        ctx.lineTo(-27, 30);
-        ctx.lineTo(-13.5, 30);
+        ctx.moveTo(-6.75, 10);
+        ctx.lineTo(-13.5, 15);
+        ctx.lineTo(-6.75, 15);
         ctx.closePath();
         ctx.fill();
         ctx.beginPath();
-        ctx.moveTo(13.5, 20);
-        ctx.lineTo(27, 30);
-        ctx.lineTo(13.5, 30);
+        ctx.moveTo(6.75, 10);
+        ctx.lineTo(13.5, 15);
+        ctx.lineTo(6.75, 15);
         ctx.closePath();
         ctx.fill();
         
-        // Flame (50% bigger than previous)
+        // Flame (100% smaller = half of previous)
         ctx.fillStyle = '#FFFF00';
         ctx.beginPath();
-        ctx.moveTo(-10.5, 30);
-        ctx.lineTo(0, 48 + Math.random() * 13.5);
-        ctx.lineTo(10.5, 30);
+        ctx.moveTo(-5.25, 15);
+        ctx.lineTo(0, 24 + Math.random() * 6.75);
+        ctx.lineTo(5.25, 15);
         ctx.closePath();
         ctx.fill();
         
-        // Glow (50% bigger than previous)
+        // Glow (100% smaller = half of previous)
         ctx.shadowColor = '#FF6600';
-        ctx.shadowBlur = 27;
+        ctx.shadowBlur = 13.5;
         ctx.fillStyle = 'rgba(255, 102, 0, 0.3)';
-        ctx.fillRect(-13.5, -30, 27, 60);
+        ctx.fillRect(-6.75, -15, 13.5, 30);
         ctx.shadowBlur = 0;
         
         ctx.restore();
