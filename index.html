@@ -40,23 +40,7 @@
             height: 100%;
         }
         
-        /* Joystick hint - shown on touch devices */
-        .joystick-hint {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            display: none;
-            color: rgba(255, 255, 255, 0.4);
-            font-size: 8px;
-            pointer-events: none;
-            z-index: 5;
-        }
-        
-        body.touch-device .joystick-hint {
-            display: block;
-        }
-        
-        /* Mobile Control Buttons */
+        /* Mobile Control Buttons - BOMB BUTTON ONLY */
         .mobile-controls {
             position: absolute;
             bottom: 60px;
@@ -92,15 +76,9 @@
             height: 24px;
         }
         
+        /* Fire button completely hidden - auto-fire is always active on touch */
         #fireBtn {
-            background: rgba(255, 200, 0, 0.4);
-            border: 2px solid #FFD700;
-            color: #FFD700;
-        }
-        
-        #fireBtn:active, #fireBtn.pressed {
-            background: rgba(255, 200, 0, 0.8);
-            transform: scale(0.95);
+            display: none !important;
         }
         
         #bombBtn {
@@ -148,12 +126,6 @@
                 width: 22px;
                 height: 22px;
             }
-            
-            .joystick-hint {
-                bottom: 15px;
-                left: 15px;
-                font-size: 7px;
-            }
         }
         
         @media (max-height: 750px) and (max-width: 520px) {
@@ -174,16 +146,8 @@
     <div id="gameContainer">
         <canvas id="gameCanvas" width="480" height="720"></canvas>
         
-        <!-- Joystick hint for touch devices -->
-        <div class="joystick-hint">◀ JOYSTICK ZONE</div>
-        
-        <!-- Mobile Control Buttons - positioned at bottom right inside container -->
+        <!-- Mobile Control Buttons - BOMB BUTTON ONLY (no fire button) -->
         <div class="mobile-controls">
-            <button id="fireBtn" class="control-btn">
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="12" cy="12" r="6"/>
-                </svg>
-            </button>
             <button id="bombBtn" class="control-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <circle cx="12" cy="14" r="7"/>
@@ -198,5 +162,30 @@
     </div>
     
     <script src="game.js"></script>
+    <script>
+        // PATCH: Fix B item (bomb) - restore full power
+        const _origUseBomb = useBomb;
+        useBomb = function() {
+            if (typeof deathActive !== 'undefined' && deathActive) return;
+            if (player.bombs <= 0) return;
+            
+            player.bombs--;
+            
+            // Destroy ALL enemies
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                createExplosion(enemies[i].x, enemies[i].y, 10);
+                score += enemies[i].score || 10;
+                enemies.splice(i, 1);
+            }
+            
+            // Clear ALL enemy bullets
+            enemyBullets = [];
+            
+            // Big screen flash
+            createExplosion(GAME_WIDTH / 2, GAME_HEIGHT / 2, 50);
+        };
+        
+        console.log('[BOMB FIX] B item power restored - all enemies and bullets cleared');
+    </script>
 </body>
 </html>

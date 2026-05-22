@@ -39,7 +39,9 @@ function startBGM() {
     const bassNotes = [55, 55, 65.41, 55, 73.42, 65.41, 55, 49]; // A1 pattern
     const bassDuration = 0.5; // 120 BPM
     
-    bassNotes.forEach((freq, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = bassNotes.length - 1; i >= 0; i--) {
+        const freq = bassNotes[i];
         const osc = audioContext.createOscillator();
         const oscGain = audioContext.createGain();
         const filter = audioContext.createBiquadFilter();
@@ -62,11 +64,13 @@ function startBGM() {
         osc.start(startTime);
         osc.stop(startTime + bassDuration);
         bgmOscillators.push(osc);
-    });
+    }
     
     // === PAD LAYER - tension chords ===
     const padFreqs = [110, 138.59, 164.81]; // A2, C#3, E3 - A major
-    padFreqs.forEach((freq, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = padFreqs.length - 1; i >= 0; i--) {
+        const freq = padFreqs[i];
         const osc = audioContext.createOscillator();
         const oscGain = audioContext.createGain();
         const filter = audioContext.createBiquadFilter();
@@ -98,14 +102,16 @@ function startBGM() {
         oscGain.connect(bgmGain);
         osc.start(now + i * 0.5);
         bgmOscillators.push(osc);
-    });
+    }
     
     // === ARPEGGIO - fast high notes for urgency ===
     const arpNotes = [440, 554.37, 659.25, 880, 659.25, 554.37]; // A4, C#5, E5, A5
     const arpSpeed = 0.15;
     
     function playArpeggioLoop(startOffset) {
-        arpNotes.forEach((freq, i) => {
+        // Converted from forEach to for (reverse for safe splice)
+        for (let i = arpNotes.length - 1; i >= 0; i--) {
+            const freq = arpNotes[i];
             const osc = audioContext.createOscillator();
             const oscGain = audioContext.createGain();
             
@@ -122,7 +128,7 @@ function startBGM() {
             osc.start(startTime);
             osc.stop(startTime + arpSpeed);
             bgmOscillators.push(osc);
-        });
+        }
     }
     
     // Play arpeggio loop every 4 seconds
@@ -156,11 +162,11 @@ function stopBGM() {
     bgmPlaying = false;
     
     const now = audioContext.currentTime;
-    bgmOscillators.forEach(osc => {
+    for (let oi = bgmOscillators.length - 1; oi >= 0; oi--) {
         try {
-            osc.stop(now + 0.5);
+            bgmOscillators[oi].stop(now + 0.5);
         } catch (e) {}
-    });
+    }
     bgmOscillators = [];
 }
 
@@ -285,7 +291,9 @@ function playPowerupSound() {
     const now = audioContext.currentTime;
     const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
     
-    notes.forEach((freq, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = notes.length - 1; i >= 0; i--) {
+        const freq = notes[i];
         const osc = audioContext.createOscillator();
         const gain = audioContext.createGain();
         
@@ -301,7 +309,7 @@ function playPowerupSound() {
         
         osc.start(now + i * 0.08);
         osc.stop(now + i * 0.08 + 0.2);
-    });
+    }
 }
 
 // Player hit sound
@@ -356,7 +364,9 @@ function playGameOverSound() {
     const now = audioContext.currentTime;
     const notes = [392, 349.23, 329.63, 293.66]; // G4, F4, E4, D4 - descending
     
-    notes.forEach((freq, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = notes.length - 1; i >= 0; i--) {
+        const freq = notes[i];
         const osc = audioContext.createOscillator();
         const gain = audioContext.createGain();
         
@@ -372,7 +382,7 @@ function playGameOverSound() {
         
         osc.start(now + i * 0.3);
         osc.stop(now + i * 0.3 + 0.35);
-    });
+    }
 }
 
 // Laser hum sound - continuous buzzing while laser fires
@@ -431,12 +441,11 @@ function stopLaserSound() {
     laserSoundActive = false;
     
     const now = audioContext.currentTime;
-    laserOscillators.forEach(osc => {
+    for (let oi = laserOscillators.length - 1; oi >= 0; oi--) {
         try {
-            const gain = osc.context ? null : null;
-            osc.stop(now + 0.05);
+            laserOscillators[oi].stop(now + 0.05);
         } catch (e) {}
-    });
+    }
     laserOscillators = [];
 }
 
@@ -466,12 +475,15 @@ let bossDefeated = false;
 let bossWaveNumber = 0;
 let bossBaseHP = 0;
 let frameCount = 0;
-let bossClawTimer = 0;
-let bossClawActive = false;
-let bossClawX = 0;
-let bossClawLength = 0;
-let bossClawMaxLength = 0;
-let bossClawRetracting = false;
+let bossClawCount = 1; // Number of claws (increases per boss)
+let bossClaws = []; // Array of claw objects: { timer, active, x, length, maxLength, retracting, offsetX }
+let octopusTentacles = []; // Array of tentacle objects: { x, y, length, maxLength, active, extending, retracting, targetX, targetY, ownerId }
+let deathActive = false;
+let deathTimer = 0;
+let deathFlashAlpha = 0;
+let spawnBoost = 0;
+let noSpawnCounter = 0;
+let lastSpawnFrame = 0;
 
 // Player
 const player = {
@@ -490,7 +502,8 @@ const player = {
     shootCooldown: 0,
     visible: true,
     vPowerActive: false,
-    vPowerTimer: 0
+    vPowerTimer: 0,
+    hadShield: false  // remember shield state before V-power
 };
 
 // Input
@@ -582,8 +595,7 @@ document.addEventListener('keyup', (e) => {
 
 let touchTarget = { x: null, y: null };
 let isTouching = false;
-let touchFirePressed = false;
-let fireBtn = null;
+// touchFirePressed removed - using auto-fire
 let bombBtn = null;
 let bombIndicator = null;
 let controlsVisible = false;
@@ -607,112 +619,20 @@ function isTouchDevice() {
 
 // Initialize mobile controls after DOM is ready
 function setupMobileControls() {
-    // Get button elements
-    fireBtn = document.getElementById('fireBtn');
     bombBtn = document.getElementById('bombBtn');
-    
-    // Create on-screen buttons inside game area
     createMobileButtons();
     
-    // Canvas touch for direct plane control AND joystick
+    // Canvas touch for Wing Fighter style movement
     canvas.addEventListener('touchstart', handleCanvasTouch, { passive: false });
     canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
     canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
     canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: false });
     
-    // Fire button - auto-fire when held
-    if (fireBtn) {
-        let fireInterval = null;
-        
-        fireBtn.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            
-            if (gameState === GameState.TITLE) {
-                initAudio();
-                startGame();
-                return;
-            }
-            
-            if (gameState === GameState.GAMEOVER) {
-                initAudio();
-                startGame();
-                return;
-            }
-            
-            if (gameState === GameState.PLAYING) {
-                touchFirePressed = true;
-                fireBtn.classList.add('pressed');
-                playerShoot();
-                
-                // Start auto-fire
-                fireInterval = setInterval(() => {
-                    if (gameState === GameState.PLAYING) {
-                        playerShoot();
-                    }
-                }, 150);
-            }
-        }, { passive: false });
-        
-        fireBtn.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            touchFirePressed = false;
-            if (fireBtn) fireBtn.classList.remove('pressed');
-            if (fireInterval) {
-                clearInterval(fireInterval);
-                fireInterval = null;
-            }
-        }, { passive: false });
-        
-        fireBtn.addEventListener('touchcancel', (e) => {
-            e.preventDefault();
-            touchFirePressed = false;
-            if (fireBtn) fireBtn.classList.remove('pressed');
-            if (fireInterval) {
-                clearInterval(fireInterval);
-                fireInterval = null;
-            }
-        }, { passive: false });
-        
-        // Mouse support for testing on desktop
-        fireBtn.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            
-            if (gameState === GameState.TITLE || gameState === GameState.GAMEOVER) {
-                initAudio();
-                startGame();
-                return;
-            }
-            
-            if (gameState === GameState.PLAYING) {
-                touchFirePressed = true;
-                fireBtn.classList.add('pressed');
-                playerShoot();
-                
-                fireInterval = setInterval(() => {
-                    if (gameState === GameState.PLAYING) {
-                        playerShoot();
-                    }
-                }, 150);
-            }
-        });
-        
-        fireBtn.addEventListener('mouseup', () => {
-            touchFirePressed = false;
-            fireBtn.classList.remove('pressed');
-            if (fireInterval) {
-                clearInterval(fireInterval);
-                fireInterval = null;
-            }
-        });
-    }
-    
-    // Bomb button
+    // Bomb button only (fire button removed - auto-fire on touch devices)
     if (bombBtn) {
         bombBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            
             if (gameState === GameState.PLAYING) {
                 useBomb();
                 bombBtn.classList.add('pressed');
@@ -732,7 +652,6 @@ function setupMobileControls() {
         // Mouse support
         bombBtn.addEventListener('mousedown', (e) => {
             e.preventDefault();
-            
             if (gameState === GameState.PLAYING) {
                 useBomb();
                 bombBtn.classList.add('pressed');
@@ -750,16 +669,8 @@ function setupMobileControls() {
 }
 
 function createMobileButtons() {
-    // Buttons are in HTML, just position them
-    if (fireBtn && bombBtn) {
+    if (bombBtn) {
         controlsVisible = true;
-        bombIndicator = document.getElementById('bombIndicator');
-        if (!bombIndicator) {
-            bombIndicator = document.createElement('div');
-            bombIndicator.id = 'bombIndicator';
-            bombIndicator.style.cssText = 'position:absolute;bottom:25px;right:10px;color:#FF8C00;font-family:"Press Start 2P",monospace;font-size:10px;z-index:10;pointer-events:none;display:none';
-            document.getElementById('gameContainer').appendChild(bombIndicator);
-        }
     }
 }
 
@@ -921,10 +832,12 @@ function startGame() {
     player.bombs = 3;
     player.lives = 3;
     player.invincible = false;
+    player.visible = true;
     player.shieldActive = false;
     player.shieldTimer = 0;
     player.vPowerActive = false;
     player.vPowerTimer = 0;
+    player.hadShield = false;
     
     playerBullets = [];
     enemyBullets = [];
@@ -941,59 +854,49 @@ function startGame() {
     bossActive = false;
     bossDefeated = false;
     bossWaveNumber = 0;
-    bossClawTimer = 0;
-    bossClawActive = false;
-    bossClawRetracting = false;
+    bossClawCount = 1;
+    bossClaws = [];
+    octopusTentacles = [];
+    deathActive = false;
+    deathTimer = 0;
+    deathFlashAlpha = 0;
+    spawnBoost = 0;
+    noSpawnCounter = 0;
+    lastSpawnFrame = 0;
     
     startBGM();
 }
 
 function useBomb() {
-    if (player.bombs > 0) {
-        player.bombs--;
-        
-        // Damage all enemies - boss takes 15% of max HP damage, others die
-        const enemiesToRemove = [];
-        enemies.forEach((enemy, ei) => {
-            if (enemy.isWaveBoss) {
-                // Boss takes 15% of max HP damage from bomb
-                const bombDamage = Math.floor(enemy.maxHp * 0.15);
-                enemy.hp -= bombDamage;
-                createExplosion(enemy.x, enemy.y, 20);
-                if (enemy.hp <= 0) {
-                    enemy.hp = 0;
-                    enemiesToRemove.push(ei);
-                }
-            } else {
-                createExplosion(enemy.x, enemy.y);
-                score += 10;
-                enemiesToRemove.push(ei);
-            }
-        });
-        
-        // Remove dead enemies (reverse order to preserve indices)
-        for (let i = enemiesToRemove.length - 1; i >= 0; i--) {
-            const idx = enemiesToRemove[i];
-            const enemy = enemies[idx];
-            if (enemy.hp <= 0 && enemy.isWaveBoss) {
-                score += enemy.score;
-                spawnPowerup(enemy.x, enemy.y);
-                bossActive = false;
-                bossDefeated = true;
-                player.lives = Math.min(5, player.lives + 1);
-                bossClawActive = false;
-                bossClawLength = 0;
-                bossClawTimer = 0;
-            }
-            enemies.splice(idx, 1);
+    if (player.bombs <= 0) return;
+    player.bombs--;
+    
+    // Destroy all enemies and bullets (except boss which takes 15% max HP damage)
+    // Reverse iteration for safe splice removal
+    for (let ei = enemies.length - 1; ei >= 0; ei--) {
+        const enemy = enemies[ei];
+        if (enemy.isWaveBoss || enemy.type === 'boss' || enemy.type === 'octopus') {
+            // ALL boss types take 15% of max HP damage from bomb - NEVER die from bomb
+            const bombDamage = Math.floor(enemy.maxHp * 0.15);
+            enemy.hp -= bombDamage;
+            // Boss cannot die from bomb - minimum 1 HP
+            if (enemy.hp < 1) enemy.hp = 1;
+            createExplosion(enemy.x, enemy.y, 20);
+        } else {
+            createExplosion(enemy.x, enemy.y);
+            score += 10;
+            enemies.splice(ei, 1);
         }
-        
-        // Clear enemy bullets
-        enemyBullets = [];
-        
-        // Screen flash effect
-        createExplosion(GAME_WIDTH / 2, GAME_HEIGHT / 2, 50);
     }
+    
+    // Clear all enemy bullets
+    enemyBullets = [];
+    
+    // Screen flash effect
+    createExplosion(GAME_WIDTH / 2, GAME_HEIGHT / 2, 50);
+    
+    // Rapid enemy respawn after bomb
+    spawnBoost = 90;
 }
 
 function playerShoot() {
@@ -1073,9 +976,20 @@ function playerShoot() {
 }
 
 function spawnEnemy() {
-    // Boss wave check: every 10th wave (10, 20, 30... 100)
-    if (wave % 10 === 0 && !bossActive && !bossDefeated) {
+    // Boss wave check: at wave 9,19,29... (appears before next 10th wave)
+    // Force new boss spawn - remove any old boss that's still alive
+    if (wave % 10 === 9 && bossWaveNumber < wave) {
+        // Remove any previous wave boss that's still alive (prevents spawn blocking)
+        if (bossActive) {
+            for (let ei = enemies.length - 1; ei >= 0; ei--) {
+                if (enemies[ei].isWaveBoss) {
+                    enemies.splice(ei, 1);
+                }
+            }
+            bossClaws = [];
+        }
         bossActive = true;
+        bossDefeated = false;
         bossWaveNumber = wave;
         
         // Boss HP: first boss = mid-boss * 3 (20+10*5=70, so 210)
@@ -1087,6 +1001,10 @@ function spawnEnemy() {
             bossHP = Math.floor(bossHP * 1.3);
         }
         bossBaseHP = bossHP;
+        
+        // Each boss appearance adds one more claw (first boss = 1 claw)
+        bossClawCount = bossNumber + 1;
+        bossClaws = [];
         
         const bossEnemy = {
             x: GAME_WIDTH / 2,
@@ -1110,12 +1028,21 @@ function spawnEnemy() {
         return;
     }
     
-    // Spawn enemies slower during boss fight
-    if (bossActive && frameCount % 3 !== 0) return;
+    // Spawn enemies slightly slower during boss fight (5/6 pass rate instead of 1/2)
+    if (bossActive && frameCount % 8 === 0) return;
     
     const types = ['scout', 'scout', 'fighter', 'bomber', 'rammer'];
     if (wave >= 3) types.push('fighter', 'bomber', 'rammer');
     if (wave >= 5 && wave % 10 !== 0) types.push('boss');
+    if (wave >= 15 && wave % 10 !== 9 && wave % 10 !== 0) {
+        // 70% heart boss, 30% octopus ratio - increased frequency by 30%
+        // Add 2 entries instead of 1 for ~30% more mid-boss spawns
+        if (Math.random() < 0.3) {
+            types.push('octopus', 'octopus');
+        } else {
+            types.push('boss', 'boss'); // double boss entries for 70% ratio
+        }
+    }
     
     const type = types[Math.floor(Math.random() * types.length)];
     
@@ -1142,6 +1069,19 @@ function spawnEnemy() {
             enemy.score = 100;
             enemy.width = 36;
             enemy.height = 36;
+            break;
+        case 'octopus':
+            // Alien octopus mid-boss (from wave 15) - stays at top, attacks with tentacles
+            enemy.hp = 10 + Math.floor(wave * 2.5);
+            enemy.maxHp = enemy.hp;
+            enemy.speed = 0;
+            enemy.score = 700;
+            enemy.width = 56;
+            enemy.height = 56;
+            enemy.y = 70;
+            enemy.isStationary = true;
+            enemy.shootCooldown = 20;
+            enemy.phase = Math.random() * Math.PI * 2;
             break;
         case 'fighter':
             enemy.hp = 2;
@@ -1181,11 +1121,17 @@ function spawnEnemy() {
             break;
     }
     
+    enemy._id = 'enemy_' + frameCount + '_' + Math.random();
     enemies.push(enemy);
 }
 
 function spawnPowerup(x, y, isBossKill) {
-    if (Math.random() > 0.053625 && !isBossKill) return;
+    // No powerups drop during V-Power mode
+    if (player.vPowerActive) return;
+    // First 9 waves (before boss): 50% higher item drop rate for better survivability
+    // From wave 10 (boss appears): original rate
+    const dropRate = wave < 10 ? 0.0804375 : 0.053625;
+    if (Math.random() > dropRate && !isBossKill) return;
     
     let types;
     if (isBossKill) {
@@ -1247,11 +1193,13 @@ function checkCollision(a, b) {
 
 function playerHit() {
     if (player.invincible || player.vPowerActive) return;
+    if (deathActive) return;
     
     player.lives--;
     player.invincible = true;
-    player.invincibleTimer = 120;
+    player.invincibleTimer = 999;
     player.shieldActive = false;
+    player.visible = false;
     
     // Lose one laser beam when hit
     if (laserBeams.length > 0) {
@@ -1268,12 +1216,62 @@ function playerHit() {
         createExplosion(removedDrone.x, removedDrone.y, 6);
     }
     
-    createExplosion(player.x, player.y, 8);
-    playHitSound();
-    
-    if (player.lives <= 0) {
-        gameOver();
+    // === DRAMATIC DEATH EXPLOSION ===
+    // Layer 1: Central burst - 50 particles in all directions
+    for (let i = 0; i < 50; i++) {
+        const angle = (Math.PI * 2 / 50) * i + Math.random() * 0.3;
+        const speed = Math.random() * 14 + 6;
+        explosions.push({
+            x: player.x,
+            y: player.y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            size: Math.random() * 6 + 3,
+            life: 1,
+            decay: Math.random() * 0.008 + 0.004,
+            color: COLORS.explosion[Math.floor(Math.random() * COLORS.explosion.length)]
+        });
     }
+    
+    // Layer 2: Debris flying outward - 40 particles with high speed
+    for (let i = 0; i < 40; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 18 + 8;
+        explosions.push({
+            x: player.x + (Math.random() - 0.5) * 20,
+            y: player.y + (Math.random() - 0.5) * 20,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            size: Math.random() * 4 + 2,
+            life: 1,
+            decay: Math.random() * 0.01 + 0.005,
+            color: ['#FFD700', '#FF6B35', '#FF4444', '#FFFFFF'][Math.floor(Math.random() * 4)]
+        });
+    }
+    
+    // Layer 3: Extra large fragments - 15 big chunks
+    for (let i = 0; i < 15; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 16 + 10;
+        explosions.push({
+            x: player.x + (Math.random() - 0.5) * 30,
+            y: player.y + (Math.random() - 0.5) * 30,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            size: Math.random() * 8 + 4,
+            life: 1,
+            decay: Math.random() * 0.006 + 0.003,
+            color: ['#1E90FF', '#FFD700', '#FF6B35', '#AAAAAA'][Math.floor(Math.random() * 4)]
+        });
+    }
+    
+    playHitSound();
+    playExplosionSound();
+    
+    // Start death sequence (2 seconds before respawn)
+    deathActive = true;
+    deathTimer = 150;
+    deathFlashAlpha = 1;
 }
 
 function gameOver() {
@@ -1283,6 +1281,50 @@ function gameOver() {
     if (score > highScore) {
         highScore = score;
         localStorage.setItem('1945_highscore', highScore);
+    }
+}
+
+function respawnPlayer() {
+    if (player.lives <= 0) {
+        deathActive = false;
+        deathFlashAlpha = 0;
+        gameOver();
+        return;
+    }
+    
+    // DESTROY ALL ENEMIES EXCEPT BOSSES
+    enemies = enemies.filter(e => e.isWaveBoss);
+    // CLEAR ALL BULLETS
+    enemyBullets = [];
+    playerBullets = [];
+    droneBullets = [];
+    powerups = [];
+    missiles = [];
+    laserBeams = [];
+    octopusTentacles = [];
+    stopLaserSound();
+    
+    player.x = GAME_WIDTH / 2;
+    player.y = GAME_HEIGHT - 80;
+    player.powerLevel = 0;
+    player.bombs = 3;
+    player.visible = true;
+    player.invincible = true;
+    player.invincibleTimer = 180;
+    player.shieldActive = false;
+    deathActive = false;
+    deathFlashAlpha = 0;
+    explosions = [];
+    
+    // Re-attach drones to new player position
+    const sideOffsets = [-30, 30, -45, 45];
+    // Converted from forEach to for (reverse for safe splice)
+    for (let idx = drones.length - 1; idx >= 0; idx--) {
+        const drone = drones[idx];
+        if (idx < sideOffsets.length) {
+            drone.x = player.x + sideOffsets[idx];
+            drone.y = player.y;
+        }
     }
 }
 
@@ -1296,13 +1338,66 @@ function update() {
     frameCount++;
     waveTimer++;
     
-    // Wave progression - instant transition with flash
+    // Wave progression - instant transition with flash (always runs)
     if (waveTimer > 1800) {
         wave++;
         waveTimer = 0;
         bossDefeated = false;
         // Show wave number flash
         waveFlash = { active: true, timer: 90, text: 'WAVE ' + wave };
+        // Rapid enemy respawn after wave increase
+        spawnBoost = 60;
+    }
+    
+    // Spawn enemies (always runs - enemies never stop!)
+    if (spawnBoost > 0) {
+        // Rapid enemy respawn after bomb/wave
+        if (frameCount % 15 === 0) {
+            spawnEnemy();
+            lastSpawnFrame = frameCount;
+            noSpawnCounter = 0;
+        }
+        spawnBoost--;
+    } else {
+        const spawnRate = Math.max(12, 90 - wave * 5);
+        if (frameCount % spawnRate === 0) {
+            spawnEnemy();
+            lastSpawnFrame = frameCount;
+            noSpawnCounter = 0;
+        }
+    }
+    
+    // SAFETY NET: If no enemies for too long, force spawn
+    noSpawnCounter++;
+    const maxGap = Math.max(60, 150 - wave * 3); // shorter gap at higher waves
+    if (noSpawnCounter > maxGap && enemies.length < 20 && !deathActive && gameState === 'playing') {
+        spawnEnemy();
+        lastSpawnFrame = frameCount;
+        noSpawnCounter = 0;
+    }
+    
+    // === DEATH SEQUENCE ===
+    if (deathActive) {
+        deathTimer--;
+        deathFlashAlpha = Math.max(0, deathTimer / 120);
+        
+        // Update explosion particles (slow motion)
+        if (frameCount % 2 === 0) {
+            for (let i = explosions.length - 1; i >= 0; i--) {
+                const p = explosions[i];
+                p.x += p.vx * 0.5;
+                p.y += p.vy * 0.5;
+                p.vx *= 0.98;
+                p.vy *= 0.98;
+                p.life -= p.decay;
+                if (p.life <= 0) explosions.splice(i, 1);
+            }
+        }
+        
+        if (deathTimer <= 0) {
+            respawnPlayer();
+        }
+        return;
     }
     
     // Player movement (keyboard)
@@ -1325,36 +1420,24 @@ function update() {
         player.y += joystickDY * player.speed;
     }
     
-    // Player movement (touch - direct control)
-    if (isTouching && touchTarget.x !== null && touchTarget.y !== null) {
-        const dx = touchTarget.x - player.x;
-        const dy = touchTarget.y - player.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        
-        if (dist > 10) {
-            // Smooth movement toward touch point
-            player.x += dx * 0.15;
-            player.y += dy * 0.15;
-        }
-    }
-    
-    // Auto-fire while touching
-    if (isTouching) {
-        playerShoot();
-    }
+    // Old touch target movement removed - using Wing Fighter style
     
     // Clamp player position
     player.x = Math.max(player.width / 2, Math.min(GAME_WIDTH - player.width / 2, player.x));
     player.y = Math.max(player.height / 2, Math.min(GAME_HEIGHT - player.height / 2, player.y));
     
-    // Shooting (keyboard)
-    if (keys['Space']) {
+    // Shooting (keyboard - Space)
+    if (keys['Space'] && player.shootCooldown <= 0) {
         playerShoot();
+        player.shootCooldown = 10;
     }
-    // Shooting (mobile fire button)
-    if (touchFirePressed) {
+    
+    // Auto-fire on touch devices (no fire button needed)
+    if (isTouchDevice() && gameState === GameState.PLAYING && player.shootCooldown <= 0) {
         playerShoot();
+        player.shootCooldown = 10;
     }
+    
     if (player.shootCooldown > 0) player.shootCooldown--;
     
     // Invincibility (after hit)
@@ -1367,13 +1450,7 @@ function update() {
         }
     }
     
-    // Shield timer
-    if (player.shieldActive) {
-        player.shieldTimer--;
-        if (player.shieldTimer <= 0) {
-            player.shieldActive = false;
-        }
-    }
+    // Shield persists until hit - no timer countdown
     
     // V power timer
     if (player.vPowerActive) {
@@ -1382,72 +1459,127 @@ function update() {
             player.vPowerActive = false;
             player.invincible = false;
             player.invincibleTimer = 0;
+            // Restore shield if player had one before V-power
+            if (player.hadShield) {
+                player.shieldActive = true;
+                player.shieldTimer = 999999;
+                player.hadShield = false;
+            }
         }
     }
     
-    // Boss claw attack - 7 second interval
-    if (bossActive) {
-        if (!bossClawActive) {
-            bossClawTimer++;
-            if (bossClawTimer >= 420) { // 7 seconds at 60fps
-                const bossEnemy = enemies.find(e => e.isWaveBoss);
-                if (bossEnemy) {
-                    bossClawActive = true;
-                    bossClawTimer = 0;
-                    bossClawX = bossEnemy.x;
-                    bossClawLength = 0;
-                    bossClawMaxLength = GAME_HEIGHT * 0.66;
-                    bossClawRetracting = false;
+    // Octopus tentacle attacks (from wave 15 mid-boss)
+    if (octopusTentacles.length > 0) {
+        for (let ti = octopusTentacles.length - 1; ti >= 0; ti--) {
+            const tentacle = octopusTentacles[ti];
+            if (!tentacle.active) { octopusTentacles.splice(ti, 1); continue; }
+            
+            if (tentacle.extending) {
+                tentacle.length += 3;
+                if (tentacle.length >= tentacle.maxLength) {
+                    tentacle.extending = false;
+                    tentacle.retracting = true;
+                }
+            } else if (tentacle.retracting) {
+                tentacle.length -= 4;
+                if (tentacle.length <= 0) {
+                    tentacle.active = false;
+                    octopusTentacles.splice(ti, 1);
+                    continue;
                 }
             }
-        }
-        if (bossClawActive) {
-            const clawSpeed = 12;
-            if (!bossClawRetracting) {
-                bossClawLength += clawSpeed;
-                if (bossClawLength >= bossClawMaxLength) {
-                    bossClawRetracting = true;
-                }
-            } else {
-                bossClawLength -= clawSpeed * 1.5;
-                if (bossClawLength <= 0) {
-                    bossClawLength = 0;
-                    bossClawActive = false;
-                    bossClawTimer = 0;
-                }
-            }
-            // Claw follows boss x position loosely
-            const bossEnemy = enemies.find(e => e.isWaveBoss);
-            if (bossEnemy) {
-                bossClawX += (bossEnemy.x - bossClawX) * 0.1;
-            }
+            
             // Check collision with player
-            const clawTipY = bossClawLength;
-            if (!player.invincible && !player.shieldActive) {
-                const dx = player.x - bossClawX;
-                const dy = player.y - clawTipY;
+            if (!player.invincible && !player.vPowerActive && !player.shieldActive) {
+                const dx = player.x - tentacle.x;
+                const dy = player.y - (tentacle.y + tentacle.length);
                 const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < 30) {
+                if (dist < 25) {
                     playerHit();
                 }
             }
         }
     }
-
-    // Spawn enemies
-    const spawnRate = Math.max(30, 90 - wave * 5);
-    if (frameCount % spawnRate === 0) {
-        spawnEnemy();
+    
+    // Boss claw attacks - multiple claws for higher boss levels
+    if (bossActive) {
+        const bossEnemy = enemies.find(e => e.isWaveBoss);
+        if (!bossEnemy) { bossClaws = []; }
+        
+        // Ensure we have the right number of claws
+        while (bossClaws.length < bossClawCount) {
+            bossClaws.push({
+                timer: bossClaws.length * 120, // Staggered start: 0, 120, 240...
+                active: false,
+                x: bossEnemy ? bossEnemy.x : GAME_WIDTH / 2,
+                length: 0,
+                maxLength: GAME_HEIGHT * 0.66,
+                retracting: false,
+                offsetX: (bossClaws.length - (bossClawCount - 1) / 2) * 40 // Spread claws
+            });
+        }
+        
+        for (let ci = bossClaws.length - 1; ci >= 0; ci--) {
+            const claw = bossClaws[ci];
+            
+            if (!claw.active) {
+                claw.timer++;
+                const clawInterval = Math.max(120, 420 - (bossClawCount - 1) * 30); // Faster with more claws
+                if (claw.timer >= clawInterval) {
+                    claw.active = true;
+                    claw.timer = 0;
+                    if (bossEnemy) {
+                        claw.x = bossEnemy.x + claw.offsetX;
+                    }
+                    claw.length = 0;
+                    claw.maxLength = GAME_HEIGHT * 0.66;
+                    claw.retracting = false;
+                }
+            }
+            
+            if (claw.active) {
+                const clawSpeed = 12;
+                if (!claw.retracting) {
+                    claw.length += clawSpeed;
+                    if (claw.length >= claw.maxLength) {
+                        claw.retracting = true;
+                    }
+                } else {
+                    claw.length -= clawSpeed * 1.5;
+                    if (claw.length <= 0) {
+                        claw.length = 0;
+                        claw.active = false;
+                        claw.timer = 0;
+                    }
+                }
+                // Claw follows boss x position loosely
+                if (bossEnemy) {
+                    claw.x += (bossEnemy.x + claw.offsetX - claw.x) * 0.1;
+                }
+                // Check collision with player
+                const clawTipY = claw.length;
+                if (!player.invincible && !player.vPowerActive && !player.shieldActive) {
+                    const dx = player.x - claw.x;
+                    const dy = player.y - clawTipY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 30) {
+                        playerHit();
+                    }
+                }
+            }
+        }
     }
+
     
     // Update stars
-    stars.forEach(star => {
+    for (let i = stars.length - 1; i >= 0; i--) {
+        const star = stars[i];
         star.y += star.speed;
         if (star.y > GAME_HEIGHT) {
             star.y = 0;
             star.x = Math.random() * GAME_WIDTH;
         }
-    });
+    }
     
     // Update laser beams - each beam targets different enemies
     if (laserBeams.length > 0) {
@@ -1461,7 +1593,9 @@ function update() {
         const damagePerTick = player.vPowerActive ? 1.14 : 0.76;  // per-beam damage (+30% boost, +50% with V power)
         const tickInterval = 16;     // frames between ticks
         
-        laserBeams.forEach((beam, beamIdx) => {
+        // Converted from forEach to for (reverse for safe splice)
+        for (let beamIdx = laserBeams.length - 1; beamIdx >= 0; beamIdx--) {
+            const beam = laserBeams[beamIdx];
             // Assign target: round-robin through sorted enemies
             if (sortedEnemies.length > 0) {
                 const enemyIdx = beamIdx % sortedEnemies.length;
@@ -1491,9 +1625,7 @@ function update() {
                             bossActive = false;
                             bossDefeated = true;
                             player.lives = Math.min(5, player.lives + 1);
-                            bossClawActive = false;
-                            bossClawLength = 0;
-                            bossClawTimer = 0;
+                            bossClaws = [];
                         } else {
                             spawnPowerup(enemy.x, enemy.y);
                         }
@@ -1503,7 +1635,7 @@ function update() {
                     }
                 }
             }
-        });
+        }
         
         // Play laser hum sound while active
         playLaserSound();
@@ -1512,7 +1644,9 @@ function update() {
     }
 
     // Update player bullets
-    playerBullets.forEach((bullet, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = playerBullets.length - 1; i >= 0; i--) {
+        const bullet = playerBullets[i];
         bullet.y -= bullet.speed;
         if (bullet.angle) {
             bullet.x += Math.sin(bullet.angle) * bullet.speed;
@@ -1520,18 +1654,22 @@ function update() {
         if (bullet.y < -20) {
             playerBullets.splice(i, 1);
         }
-    });
+    }
     
     // Update enemy bullets
-    enemyBullets.forEach((bullet, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        const bullet = enemyBullets[i];
         bullet.y += bullet.speed;
         if (bullet.y > GAME_HEIGHT + 20) {
             enemyBullets.splice(i, 1);
         }
-    });
+    }
     
     // Update enemies
-    enemies.forEach((enemy, ei) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let ei = enemies.length - 1; ei >= 0; ei--) {
+        const enemy = enemies[ei];
         enemy.phase += 0.05;
         
         switch (enemy.type) {
@@ -1572,7 +1710,7 @@ function update() {
                 if (enemy.y < 100) {
                     enemy.y += enemy.speed;
                 } else {
-                    enemy.x += Math.sin(enemy.phase * 0.5) * 2;
+                    enemy.x += Math.sin(enemy.phase * 0.5) * 180;
                     enemy.shootCooldown--;
                     if (enemy.shootCooldown <= 0) {
                         // 1-bullet shot (reduced from 2)
@@ -1587,6 +1725,41 @@ function update() {
                     }
                 }
                 break;
+        case 'octopus':
+            // Alien octopus - stationary at top, attacks with tentacles only
+            enemy.phase += 0.03;
+            // Auto-remove after lifetime (30 sec = ~1800 frames) to prevent accumulation
+            enemy._lifetime = (enemy._lifetime || 0) + 1;
+            if (enemy._lifetime > 900) {
+                createExplosion(enemy.x, enemy.y, 8);
+                enemies.splice(ei, 1);
+                break;
+            }
+            // Gentle sway at top position
+            enemy.x += Math.sin(enemy.phase) * 120;
+            // Stay fixed at top
+            enemy.y = 70;
+            
+            // Tentacle attack toward player
+            enemy.shootCooldown--;
+            if (enemy.shootCooldown <= 0) {
+                // Launch tentacle strike toward player
+                const maxReach = Math.min(player.y - enemy.y - 20, GAME_HEIGHT * 0.5);
+                octopusTentacles.push({
+                    ownerId: enemy._id,
+                    x: enemy.x,
+                    y: enemy.y + enemy.height / 2,
+                    length: 0,
+                    maxLength: Math.max(maxReach, 80),
+                    active: true,
+                    extending: true,
+                    retracting: false,
+                    targetX: player.x,
+                    targetY: player.y - 30
+                });
+                enemy.shootCooldown = 90 + Math.random() * 40; // Longer interval for balance
+            }
+            break;
         }
         
         // Keep enemy in bounds
@@ -1609,20 +1782,29 @@ function update() {
         
         // Remove off-screen enemies
         if (enemy.y > GAME_HEIGHT + 50) {
+            if (enemy.isWaveBoss) {
+                bossActive = false;
+                bossDefeated = true;
+                bossClaws = [];
+            }
             enemies.splice(ei, 1);
         }
-    });
+    }
     
     // Update powerups
-    powerups.forEach((pu, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = powerups.length - 1; i >= 0; i--) {
+        const pu = powerups[i];
         pu.y += pu.speed;
         if (pu.y > GAME_HEIGHT + 20) {
             powerups.splice(i, 1);
         }
-    });
+    }
     
     // Update drones
-    drones.forEach((drone, di) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let di = drones.length - 1; di >= 0; di--) {
+        const drone = drones[di];
         // Follow player with offset
         const targetX = player.x + drone.offsetX;
         const targetY = player.y + drone.offsetY;
@@ -1638,7 +1820,8 @@ function update() {
                 if (enemies.length > 0) {
                     let nearestEnemy = null;
                     let nearestDist = Infinity;
-                    enemies.forEach(enemy => {
+                    for (let ei = 0; ei < enemies.length; ei++) {
+                        const enemy = enemies[ei];
                         const dx = enemy.x - drone.x;
                         const dy = enemy.y - drone.y;
                         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -1646,7 +1829,7 @@ function update() {
                             nearestDist = dist;
                             nearestEnemy = enemy;
                         }
-                    });
+                    }
                     
                     if (nearestEnemy) {
                         const dx = nearestEnemy.x - drone.x;
@@ -1683,10 +1866,12 @@ function update() {
                 drone.shootCooldown = 20 + Math.random() * 20;
             }
         }
-    });
+    }
     
     // Update drone bullets
-    droneBullets.forEach((bullet, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = droneBullets.length - 1; i >= 0; i--) {
+        const bullet = droneBullets[i];
         if (bullet.isHoming) {
             // Homing missile - track target enemy
             bullet.life--;
@@ -1700,7 +1885,8 @@ function update() {
                 // Find new nearest enemy
                 let nearestEnemy = null;
                 let nearestDist = Infinity;
-                enemies.forEach(enemy => {
+                for (let ei = 0; ei < enemies.length; ei++) {
+                    const enemy = enemies[ei];
                     const dx = enemy.x - bullet.x;
                     const dy = enemy.y - bullet.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -1708,7 +1894,7 @@ function update() {
                         nearestDist = dist;
                         nearestEnemy = enemy;
                     }
-                });
+                }
                 bullet.targetEnemy = nearestEnemy;
             }
             
@@ -1744,13 +1930,16 @@ function update() {
                 droneBullets.splice(i, 1);
             }
         }
-    });
+    }
     
     // Collision: Drone bullets vs Enemies
-    droneBullets.forEach((bullet, bi) => {
-        if (bullet._hit) return;
-        enemies.forEach((enemy, ei) => {
-            if (bullet._hit) return;
+    // Converted from forEach to for (reverse for safe splice)
+    for (let bi = droneBullets.length - 1; bi >= 0; bi--) {
+        const bullet = droneBullets[bi];
+        if (bullet._hit) continue;
+        for (let ei = enemies.length - 1; ei >= 0; ei--) {
+            const enemy = enemies[ei];
+            if (bullet._hit) break;
             if (checkCollision(bullet, enemy)) {
                 const dmg = (bullet.damage || 1) * (player.vPowerActive ? 1.5 : 1);
                 enemy.hp -= dmg;
@@ -1765,9 +1954,7 @@ function update() {
                         bossActive = false;
                         bossDefeated = true;
                         player.lives = Math.min(5, player.lives + 1);
-                        bossClawActive = false;
-                        bossClawLength = 0;
-                        bossClawTimer = 0;
+                        bossClaws = [];
                     } else {
                         spawnPowerup(enemy.x, enemy.y);
                     }
@@ -1776,11 +1963,13 @@ function update() {
                     createExplosion(enemy.x, enemy.y, 4);
                 }
             }
-        });
-    });
+        }
+    }
     
     // Update explosions
-    explosions.forEach((exp, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = explosions.length - 1; i >= 0; i--) {
+        const exp = explosions[i];
         exp.x += exp.vx;
         exp.y += exp.vy;
         exp.vx *= 0.95;
@@ -1789,7 +1978,7 @@ function update() {
         if (exp.life <= 0) {
             explosions.splice(i, 1);
         }
-    });
+    }
     
     // Missile cooldowns (decrement every frame)
     if (playerMissileLevel > 0) {
@@ -1834,11 +2023,12 @@ function update() {
         if (m.homing && !m.defensive) {
             // Homing: track nearest enemy
             let closest = null, closestDist = Infinity;
-            enemies.forEach(e => {
+            for (let ei = 0; ei < enemies.length; ei++) {
+                const e = enemies[ei];
                 const dx = e.x - m.x, dy = e.y - m.y;
                 const d = Math.sqrt(dx * dx + dy * dy);
                 if (d < closestDist) { closestDist = d; closest = e; }
-            });
+            }
             if (closest) {
                 const tdx = closest.x - m.x, tdy = closest.y - m.y;
                 const td = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
@@ -1854,10 +2044,11 @@ function update() {
             if (enemyBullets.length > 0) {
                 let closestBullet = enemyBullets[0];
                 let cbDist = Infinity;
-                enemyBullets.forEach(b => {
+                for (let bi = 0; bi < enemyBullets.length; bi++) {
+                    const b = enemyBullets[bi];
                     const d = Math.hypot(b.x - m.x, b.y - m.y);
                     if (d < cbDist) { cbDist = d; closestBullet = b; }
-                });
+                }
                 const tdx = closestBullet.x - m.x, tdy = closestBullet.y - m.y;
                 const td = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
                 m.vx = tdx / td * 2.5;
@@ -1931,6 +2122,8 @@ function update() {
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                         bossDefeated = true;
+                        bossClaws = [];
+                        player.lives = Math.min(5, player.lives + 1);
                     } else {
                         spawnPowerup(enemy.x, enemy.y);
                     }
@@ -1946,8 +2139,11 @@ function update() {
     }
     
     // Collision: Player bullets vs Enemies
-    playerBullets.forEach((bullet, bi) => {
-        enemies.forEach((enemy, ei) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let bi = playerBullets.length - 1; bi >= 0; bi--) {
+        const bullet = playerBullets[bi];
+        for (let ei = enemies.length - 1; ei >= 0; ei--) {
+            const enemy = enemies[ei];
             if (checkCollision(bullet, enemy)) {
                 enemy.hp -= player.vPowerActive ? 1.5 : 1;
                 playerBullets.splice(bi, 1);
@@ -1959,6 +2155,8 @@ function update() {
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                         bossDefeated = true;
+                        bossClaws = [];
+                        player.lives = Math.min(5, player.lives + 1);
                     } else {
                         spawnPowerup(enemy.x, enemy.y);
                     }
@@ -1967,15 +2165,17 @@ function update() {
                     createExplosion(enemy.x, enemy.y, 4);
                 }
             }
-        });
-    });
+        }
+    }
     
     // Collision: Enemy bullets vs Player
     if (!player.invincible) {
-        enemyBullets.forEach((bullet, bi) => {
+        // Converted from forEach to for (reverse for safe splice)
+        for (let bi = enemyBullets.length - 1; bi >= 0; bi--) {
+            const bullet = enemyBullets[bi];
             if (checkCollision(bullet, player)) {
                 enemyBullets.splice(bi, 1);
-                if (player.shieldActive) {
+            if (player.shieldActive && !player.vPowerActive) {
                     // Shield absorbs the hit
                     player.shieldActive = false;
                     player.shieldTimer = 0;
@@ -1984,16 +2184,23 @@ function update() {
                     playerHit();
                 }
             }
-        });
+        }
     }
     
     // Collision: Enemies vs Player
     if (!player.invincible) {
-        enemies.forEach((enemy, ei) => {
+        // Converted from forEach to for (reverse for safe splice)
+        for (let ei = enemies.length - 1; ei >= 0; ei--) {
+            const enemy = enemies[ei];
             if (checkCollision(enemy, player)) {
                 createExplosion(enemy.x, enemy.y);
+                if (enemy.isWaveBoss) {
+                    bossActive = false;
+                    bossDefeated = true;
+                    bossClaws = [];
+                }
                 enemies.splice(ei, 1);
-                if (player.shieldActive) {
+            if (player.shieldActive && !player.vPowerActive) {
                     // Shield absorbs the hit
                     player.shieldActive = false;
                     player.shieldTimer = 0;
@@ -2002,11 +2209,13 @@ function update() {
                     playerHit();
                 }
             }
-        });
+        }
     }
     
     // Collision: Powerups vs Player
-    powerups.forEach((pu, i) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let i = powerups.length - 1; i >= 0; i--) {
+        const pu = powerups[i];
         if (checkCollision(pu, player)) {
             playPowerupSound();
             switch (pu.type) {
@@ -2034,7 +2243,7 @@ function update() {
                     break;
                 case 'shield':
                     player.shieldActive = true;
-                    player.shieldTimer = 600;
+                    player.shieldTimer = 999999; // never expires until hit
                     break;
                 case 'drone':
                     // Add a normal drone (pink) up to max 4 total
@@ -2117,17 +2326,18 @@ function update() {
                     break;
                 case 'powerV':
                     // Gray V - 5 seconds of +50% weapon power
+                    player.hadShield = player.shieldActive;
                     player.vPowerActive = true;
-                    player.vPowerTimer = 300; // 5 seconds at 60fps
+                    player.vPowerTimer = 420; // 7 seconds at 60fps
                     player.invincible = true;
-                    player.invincibleTimer = 300; // 5s invincibility
-                    player.shieldActive = false; // no separate shield during V-power
+                    player.invincibleTimer = 420; // 7s invincibility
+                    // Shield preserved (invincibility protects it)
                     playPowerupSound();
                     break;
             }
             powerups.splice(i, 1);
         }
-    });
+    }
 }
 
 // ============================================
@@ -2140,7 +2350,9 @@ function drawLaserBeam() {
     const startX = player.x;
     const startY = player.y - player.height / 2;
     
-    laserBeams.forEach((beam, beamIdx) => {
+    // Converted from forEach to for (reverse for safe splice)
+    for (let beamIdx = laserBeams.length - 1; beamIdx >= 0; beamIdx--) {
+        const beam = laserBeams[beamIdx];
         if (!beam.targetEnemy) return;
         
         const endX = beam.targetX;
@@ -2190,7 +2402,7 @@ function drawLaserBeam() {
         ctx.fill();
         
         ctx.restore();
-    });
+    }
 }
 function drawBackground() {
     // Gradient sky
@@ -2203,12 +2415,13 @@ function drawBackground() {
     
     // Stars
     ctx.fillStyle = '#FFFFFF';
-    stars.forEach(star => {
+    for (let si = 0; si < stars.length; si++) {
+        const star = stars[si];
         ctx.globalAlpha = 0.3 + Math.random() * 0.4;
         ctx.beginPath();
         ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
         ctx.fill();
-    });
+    }
     ctx.globalAlpha = 1;
 }
 
@@ -2218,15 +2431,127 @@ function drawPlayer() {
     ctx.save();
     ctx.translate(player.x, player.y);
     
-    // V power effect - gray tint + color change
+    // V power effect - EAGLE TRANSFORMATION
     if (player.vPowerActive) {
-        // Blinking effect
-        ctx.globalAlpha = 0.5 + Math.sin(frameCount * 0.3) * 0.5;
-        // Override player colors to gray/silver
-        ctx.fillStyle = '#AAAAAA';
-        ctx.strokeStyle = '#888888';
-        // Bigger plane during V-power
-        ctx.scale(1.3, 1.3);
+        ctx.globalAlpha = 0.8 + Math.sin(frameCount * 0.3) * 0.2;
+        ctx.scale(1.8, 1.8); // Much bigger eagle
+        
+        // Eagle body - dark brown
+        ctx.fillStyle = '#4A3728';
+        ctx.strokeStyle = '#2A1F14';
+        ctx.lineWidth = 2;
+        
+        // Wing flap animation
+        const wingPhase = Math.sin(frameCount * 0.25);
+        const wingSpread = 18 + wingPhase * 8; // wings go up and down
+        
+        // Left wing (flapping)
+        ctx.save();
+        ctx.translate(-8, -2);
+        ctx.rotate(-0.4 + wingPhase * 0.3);
+        ctx.fillStyle = '#5C4033';
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(-wingSpread, -8);
+        ctx.lineTo(-wingSpread - 4, 2);
+        ctx.lineTo(-4, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#3A2718';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+        
+        // Right wing (flapping - opposite phase)
+        ctx.save();
+        ctx.translate(8, -2);
+        ctx.rotate(0.4 - wingPhase * 0.3);
+        ctx.fillStyle = '#5C4033';
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(wingSpread, -8);
+        ctx.lineTo(wingSpread + 4, 2);
+        ctx.lineTo(4, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#3A2718';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+        
+        // Eagle head
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.arc(0, -6, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#3A2718';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        // Golden beak
+        ctx.fillStyle = '#FFD700';
+        ctx.strokeStyle = '#CC9900';
+        ctx.beginPath();
+        ctx.moveTo(5, -10);
+        ctx.lineTo(12, -6);
+        ctx.lineTo(5, -4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        
+        // Eyes
+        ctx.fillStyle = '#000000';
+        ctx.beginPath();
+        ctx.arc(2, -10, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#FF0000';
+        ctx.beginPath();
+        ctx.arc(2, -10, 1, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Eagle body
+        ctx.fillStyle = '#5C4033';
+        ctx.beginPath();
+        ctx.ellipse(0, 3, 7, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#3A2718';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        // Chest feathers (lighter)
+        ctx.fillStyle = '#8B7355';
+        ctx.beginPath();
+        ctx.ellipse(0, 5, 4, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Tail feathers
+        ctx.fillStyle = '#3A2718';
+        ctx.beginPath();
+        ctx.moveTo(-4, 13);
+        ctx.lineTo(-8, 20);
+        ctx.lineTo(0, 16);
+        ctx.lineTo(8, 20);
+        ctx.lineTo(4, 13);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Talons
+        ctx.strokeStyle = '#FFD700';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-4, 12);
+        ctx.lineTo(-7, 16);
+        ctx.moveTo(-4, 12);
+        ctx.lineTo(-3, 18);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(4, 12);
+        ctx.lineTo(7, 16);
+        ctx.moveTo(4, 12);
+        ctx.lineTo(3, 18);
+        ctx.stroke();
+        
+        ctx.lineWidth = 1;
     }
     
     // Shield bubble
@@ -2250,93 +2575,154 @@ function drawPlayer() {
     }
     
     // Glow effect
-    ctx.shadowColor = COLORS.player;
-    ctx.shadowBlur = 15;
+    if (!player.vPowerActive) {
+        ctx.shadowColor = COLORS.player;
+        ctx.shadowBlur = 15;
+    }
     
     // Main body
-    if (!player.vPowerActive) ctx.fillStyle = COLORS.playerBody;
-    ctx.beginPath();
-    ctx.moveTo(0, -20);
-    ctx.lineTo(-15, 15);
-    ctx.lineTo(-5, 10);
-    ctx.lineTo(0, 20);
-    ctx.lineTo(5, 10);
-    ctx.lineTo(15, 15);
-    ctx.closePath();
-    ctx.fill();
-    
-    // Wings
-    if (!player.vPowerActive) ctx.fillStyle = '#4169E1';
-    ctx.fillRect(-25, 0, 15, 8);
-    ctx.fillRect(10, 0, 15, 8);
-    
-    // Cockpit
-    if (!player.vPowerActive) ctx.fillStyle = '#87CEEB';
-    ctx.beginPath();
-    ctx.ellipse(0, -5, 5, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-    
-    // Engine glow
-    if (!player.vPowerActive) ctx.fillStyle = COLORS.player;
-    ctx.beginPath();
-    ctx.moveTo(-5, 20);
-    ctx.lineTo(0, 30 + Math.random() * 5);
-    ctx.lineTo(5, 20);
-    ctx.closePath();
-    ctx.fill();
+    if (!player.vPowerActive) {
+        ctx.fillStyle = COLORS.playerBody;
+        ctx.beginPath();
+        ctx.moveTo(0, -20);
+        ctx.lineTo(-15, 15);
+        ctx.lineTo(-5, 10);
+        ctx.lineTo(0, 20);
+        ctx.lineTo(5, 10);
+        ctx.lineTo(15, 15);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Wings
+        ctx.fillStyle = "#4169E1";
+        ctx.fillRect(-25, 0, 15, 8);
+        ctx.fillRect(10, 0, 15, 8);
+        
+        // Cockpit
+        ctx.fillStyle = "#87CEEB";
+        ctx.beginPath();
+        ctx.ellipse(0, -5, 5, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Engine glow
+        ctx.fillStyle = COLORS.player;
+        ctx.beginPath();
+        ctx.moveTo(-5, 20);
+        ctx.lineTo(0, 30 + Math.random() * 5);
+        ctx.lineTo(5, 20);
+        ctx.closePath();
+        ctx.fill();
+    }
     
     ctx.shadowBlur = 0;
     ctx.restore();
 }
 
+function drawOctopusTentacles() {
+    for (let ti = 0; ti < octopusTentacles.length; ti++) {
+        const tentacle = octopusTentacles[ti];
+        if (!tentacle.active || tentacle.length <= 0) continue;
+        
+        const startX = tentacle.x;
+        const startY = tentacle.y;
+        const endY = startY + tentacle.length;
+        
+        ctx.save();
+        
+        // Tentacle body - green/purple alien colors
+        ctx.strokeStyle = '#4A7A3B';
+        ctx.lineWidth = 5;
+        ctx.shadowColor = '#88FF44';
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        // Wavy tentacle
+        const waveAmp = 12 * (tentacle.length / tentacle.maxLength);
+        for (let seg = 0; seg <= 8; seg++) {
+            const t = seg / 8;
+            const segY = startY + t * tentacle.length;
+            const segX = startX + Math.sin(t * Math.PI * 3 + frameCount * 0.1) * waveAmp;
+            ctx.lineTo(segX, segY);
+        }
+        ctx.stroke();
+        
+        // Outer glow layer
+        ctx.strokeStyle = 'rgba(100, 255, 100, 0.3)';
+        ctx.lineWidth = 9;
+        ctx.stroke();
+        
+        // Tentacle tip - spiky sucker
+        const tipX = startX + Math.sin(Math.PI * 3 + frameCount * 0.1) * waveAmp;
+        const tipY = endY;
+        
+        ctx.fillStyle = '#CC00CC';
+        ctx.shadowColor = '#FF00FF';
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(tipX, tipY, 7, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Inner tip
+        ctx.fillStyle = '#FF66FF';
+        ctx.beginPath();
+        ctx.arc(tipX, tipY, 3, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.restore();
+    }
+}
+
 function drawBossClaw() {
-    if (!bossClawActive || bossClawLength <= 0) return;
-    
-    const startY = 0;
-    const endY = bossClawLength;
-    const x = bossClawX;
-    
-    ctx.save();
-    
-    // Main claw arm - metallic gray
-    ctx.strokeStyle = '#AAAAAA';
-    ctx.lineWidth = 4;
-    ctx.shadowColor = '#888888';
-    ctx.shadowBlur = 8;
-    ctx.beginPath();
-    ctx.moveTo(x, startY);
-    ctx.lineTo(x, endY);
-    ctx.stroke();
-    
-    // Claw tip - pincer
-    const tipSize = 12;
-    ctx.fillStyle = '#CC0000';
-    ctx.shadowColor = '#FF0000';
-    ctx.shadowBlur = 6;
-    
-    // Left pincer
-    ctx.beginPath();
-    ctx.moveTo(x, endY);
-    ctx.lineTo(x - tipSize, endY + tipSize * 1.5);
-    ctx.lineTo(x - 3, endY + 3);
-    ctx.closePath();
-    ctx.fill();
-    
-    // Right pincer
-    ctx.beginPath();
-    ctx.moveTo(x, endY);
-    ctx.lineTo(x + tipSize, endY + tipSize * 1.5);
-    ctx.lineTo(x + 3, endY + 3);
-    ctx.closePath();
-    ctx.fill();
-    
-    // Glowing red tip
-    ctx.beginPath();
-    ctx.arc(x, endY, 7, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
-    ctx.fill();
-    
-    ctx.restore();
+    for (let ci = 0; ci < bossClaws.length; ci++) {
+        const claw = bossClaws[ci];
+        if (!claw.active || claw.length <= 0) continue;
+        
+        const startY = 0;
+        const endY = claw.length;
+        const x = claw.x;
+        
+        ctx.save();
+        
+        // Main claw arm - metallic gray
+        ctx.strokeStyle = '#AAAAAA';
+        ctx.lineWidth = 4;
+        ctx.shadowColor = '#888888';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.moveTo(x, startY);
+        ctx.lineTo(x, endY);
+        ctx.stroke();
+        
+        // Claw tip - pincer
+        const tipSize = 12;
+        ctx.fillStyle = '#CC0000';
+        ctx.shadowColor = '#FF0000';
+        ctx.shadowBlur = 6;
+        
+        // Left pincer
+        ctx.beginPath();
+        ctx.moveTo(x, endY);
+        ctx.lineTo(x - tipSize, endY + tipSize * 1.5);
+        ctx.lineTo(x - 3, endY + 3);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Right pincer
+        ctx.beginPath();
+        ctx.moveTo(x, endY);
+        ctx.lineTo(x + tipSize, endY + tipSize * 1.5);
+        ctx.lineTo(x + 3, endY + 3);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Glowing red tip
+        ctx.beginPath();
+        ctx.arc(x, endY, 7, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+        ctx.fill();
+        
+        ctx.restore();
+    }
 }
 
 function drawEnemy(enemy) {
@@ -2407,6 +2793,65 @@ function drawEnemy(enemy) {
             ctx.beginPath();
             ctx.arc(0, 15, 5, 0, Math.PI * 2);
             ctx.fill();
+            break;
+            
+        case 'octopus':
+            // Alien octopus mid-boss - spiky shape with tentacles
+            const octoSize = enemy.width / 2;
+            
+            // Body - dark green spiky octopus shape
+            ctx.fillStyle = '#2D5A1E';
+            ctx.beginPath();
+            const spikes = 8;
+            for (let s = 0; s < spikes; s++) {
+                const angle = (Math.PI * 2 / spikes) * s + enemy.phase * 0.5;
+                const r1 = octoSize * 0.7;
+                const r2 = octoSize * 1.1;
+                ctx.lineTo(Math.cos(angle - 0.2) * r1, Math.sin(angle - 0.2) * r1);
+                ctx.lineTo(Math.cos(angle) * r2, Math.sin(angle) * r2);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#1A3A0A';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Inner body
+            ctx.fillStyle = '#3D8B2E';
+            ctx.beginPath();
+            ctx.arc(0, 0, octoSize * 0.6, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Glowing eyes
+            ctx.fillStyle = '#FF0000';
+            ctx.shadowColor = '#FF0000';
+            ctx.shadowBlur = 8;
+            ctx.beginPath();
+            ctx.arc(-octoSize * 0.25, -octoSize * 0.15, 5, 0, Math.PI * 2);
+            ctx.arc(octoSize * 0.25, -octoSize * 0.15, 5, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Pupils
+            ctx.fillStyle = '#000000';
+            ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.arc(-octoSize * 0.25, -octoSize * 0.15, 2, 0, Math.PI * 2);
+            ctx.arc(octoSize * 0.25, -octoSize * 0.15, 2, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Small tentacles around body
+            ctx.strokeStyle = '#3D8B2E';
+            ctx.lineWidth = 2;
+            for (let t = 0; t < 6; t++) {
+                const tAngle = (Math.PI * 2 / 6) * t + Math.sin(frameCount * 0.08 + t) * 0.4;
+                const tx = Math.cos(tAngle) * octoSize * 0.8;
+                const ty = Math.sin(tAngle) * octoSize * 0.8;
+                ctx.beginPath();
+                ctx.moveTo(tx, ty);
+                ctx.lineTo(tx * 1.5, ty * 1.5);
+                ctx.stroke();
+            }
+            ctx.lineWidth = 1;
             break;
             
         case 'boss':
@@ -2759,7 +3204,8 @@ function drawJoystick() {
 }
 
 function drawMissiles() {
-    missiles.forEach(m => {
+    for (let mi = 0; mi < missiles.length; mi++) {
+        const m = missiles[mi];
         ctx.save();
         ctx.translate(m.x, m.y);
         
@@ -2812,10 +3258,12 @@ function drawMissiles() {
         ctx.shadowBlur = 0;
         
         ctx.restore();
-    });
+    }
 }
 
 function drawUI() {
+    // Death flash overlay removed - explosion particles are the visual effect
+    
     // Wave flash display
     if (waveFlash && waveFlash.active) {
         const flashAlpha = waveFlash.timer > 60 ? 1 : (waveFlash.timer / 60);
@@ -2854,12 +3302,25 @@ function drawUI() {
     ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillText(`WAVE ${wave}`, GAME_WIDTH / 2, 30);
     
-    // V Power indicator
+    // V Power - very faint, small pulsing countdown number
     if (player.vPowerActive) {
         const vSecLeft = Math.ceil(player.vPowerTimer / 60);
-        ctx.fillStyle = '#888888';
-        ctx.font = '8px "Press Start 2P", monospace';
-        ctx.fillText(`V-POWER ${vSecLeft}s`, GAME_WIDTH / 2, 48);
+        const alpha = 0.04 + Math.abs(Math.sin(frameCount * 0.05)) * 0.06;
+        const scale = 1.2 + Math.sin(frameCount * 0.08) * 0.15;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = `bold ${Math.floor(40 * scale)}px "Press Start 2P", monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.shadowColor = "#FFD700";
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillText(vSecLeft, GAME_WIDTH / 2, GAME_HEIGHT / 2 - 15);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+        ctx.globalAlpha = 1;
+        ctx.restore();
     }
     
     // Lives
@@ -2996,6 +3457,7 @@ function drawGameOverScreen() {
 // ============================================
 
 function gameLoop() {
+    try {
     // Always increment frameCount for animations
     frameCount++;
     
@@ -3013,22 +3475,23 @@ function gameLoop() {
         drawBackground();
         
         // Draw game objects
-        powerups.forEach(pu => drawPowerup(pu));
-        playerBullets.forEach(b => drawBullet(b, false));
-        enemyBullets.forEach(b => drawBullet(b, true));
+        for (let i = powerups.length - 1; i >= 0; i--) drawPowerup(powerups[i]);
+        for (let i = playerBullets.length - 1; i >= 0; i--) drawBullet(playerBullets[i], false);
+        for (let i = enemyBullets.length - 1; i >= 0; i--) drawBullet(enemyBullets[i], true);
         // Draw boss claw before enemies
         drawBossClaw();
+        drawOctopusTentacles();
         
-        enemies.forEach(enemy => drawEnemy(enemy));
-        explosions.forEach(exp => drawExplosion(exp));
+        for (let i = enemies.length - 1; i >= 0; i--) drawEnemy(enemies[i]);
+        for (let i = explosions.length - 1; i >= 0; i--) drawExplosion(explosions[i]);
         
         if (player.visible) drawPlayer();
         if (laserBeams.length > 0) drawLaserBeam();
         drawMissiles();
         
         // Draw drones
-        drones.forEach(d => drawDrone(d));
-        droneBullets.forEach(b => drawDroneBullet(b));
+        for (let i = drones.length - 1; i >= 0; i--) drawDrone(drones[i]);
+        for (let i = droneBullets.length - 1; i >= 0; i--) drawDroneBullet(droneBullets[i]);
         
         // Draw joystick on touch devices (always show base)
         if (isTouchDevice()) {
@@ -3038,25 +3501,26 @@ function gameLoop() {
         drawUI();
     } else if (gameState === GameState.PAUSED) {
         drawBackground();
-        powerups.forEach(pu => drawPowerup(pu));
-        playerBullets.forEach(b => drawBullet(b, false));
-        enemyBullets.forEach(b => drawBullet(b, true));
+        for (let i = powerups.length - 1; i >= 0; i--) drawPowerup(powerups[i]);
+        for (let i = playerBullets.length - 1; i >= 0; i--) drawBullet(playerBullets[i], false);
+        for (let i = enemyBullets.length - 1; i >= 0; i--) drawBullet(enemyBullets[i], true);
         drawBossClaw();
-        enemies.forEach(enemy => drawEnemy(enemy));
+        for (let i = enemies.length - 1; i >= 0; i--) drawEnemy(enemies[i]);
         if (player.visible) drawPlayer();
-        drones.forEach(d => drawDrone(d));
-        droneBullets.forEach(b => drawDroneBullet(b));
+        for (let i = drones.length - 1; i >= 0; i--) drawDrone(drones[i]);
+        for (let i = droneBullets.length - 1; i >= 0; i--) drawDroneBullet(droneBullets[i]);
         if (isTouchDevice()) { drawJoystick(); }
         drawUI();
         drawPauseScreen();
     } else if (gameState === GameState.GAMEOVER) {
         drawBackground();
-        explosions.forEach(exp => drawExplosion(exp));
+        for (let i = explosions.length - 1; i >= 0; i--) drawExplosion(explosions[i]);
         if (isTouchDevice()) { drawJoystick(); }
         drawGameOverScreen();
     }
     
     requestAnimationFrame(gameLoop);
+    } catch(e) { console.error("Game loop error:", e.message); requestAnimationFrame(gameLoop); }
 }
 
 // Start the game
