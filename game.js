@@ -1028,7 +1028,7 @@ function spawnEnemy() {
         return;
     }
     
-    // Spawn enemies slightly slower during boss fight (5/6 pass rate instead of 1/2)
+    // Spawn enemies slightly slower during boss fight (7/8 pass rate)
     if (bossActive && frameCount % 8 === 0) return;
     
     const types = ['scout', 'scout', 'fighter', 'bomber', 'rammer'];
@@ -1080,7 +1080,7 @@ function spawnEnemy() {
             enemy.height = 56;
             enemy.y = 70;
             enemy.isStationary = true;
-            enemy.shootCooldown = 20;
+            enemy.shootCooldown = 60;
             enemy.phase = Math.random() * Math.PI * 2;
             break;
         case 'fighter':
@@ -1369,8 +1369,8 @@ function update() {
     
     // SAFETY NET: If no enemies for too long, force spawn
     noSpawnCounter++;
-    const maxGap = Math.max(60, 150 - wave * 3); // shorter gap at higher waves
-    if (noSpawnCounter > maxGap && enemies.length < 20 && !deathActive && gameState === 'playing') {
+    const maxGap = Math.max(45, 120 - wave * 2); // shorter gap at higher waves
+    if (noSpawnCounter > maxGap && enemies.length < 30 && !deathActive && gameState === 'playing') {
         spawnEnemy();
         lastSpawnFrame = frameCount;
         noSpawnCounter = 0;
@@ -1475,13 +1475,13 @@ function update() {
             if (!tentacle.active) { octopusTentacles.splice(ti, 1); continue; }
             
             if (tentacle.extending) {
-                tentacle.length += 3;
+                tentacle.length += 1.8;
                 if (tentacle.length >= tentacle.maxLength) {
                     tentacle.extending = false;
                     tentacle.retracting = true;
                 }
             } else if (tentacle.retracting) {
-                tentacle.length -= 4;
+                tentacle.length -= 3;
                 if (tentacle.length <= 0) {
                     tentacle.active = false;
                     octopusTentacles.splice(ti, 1);
@@ -1710,7 +1710,9 @@ function update() {
                 if (enemy.y < 100) {
                     enemy.y += enemy.speed;
                 } else {
-                    enemy.x += Math.sin(enemy.phase * 0.5) * 180;
+                    // Sweep left-right across full screen width
+                    enemy.phase += 0.025;
+                    enemy.x += Math.sin(enemy.phase) * 3;
                     enemy.shootCooldown--;
                     if (enemy.shootCooldown <= 0) {
                         // 1-bullet shot (reduced from 2)
@@ -1757,7 +1759,7 @@ function update() {
                     targetX: player.x,
                     targetY: player.y - 30
                 });
-                enemy.shootCooldown = 90 + Math.random() * 40; // Longer interval for balance
+                enemy.shootCooldown = 130 + Math.random() * 50; // Even longer interval for balance
             }
             break;
         }
