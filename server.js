@@ -2,8 +2,6 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 4000;
-
 const server = http.createServer((req, res) => {
     let filePath = req.url === '/' ? '/index.html' : req.url;
     filePath = path.join(__dirname, filePath);
@@ -25,6 +23,9 @@ const server = http.createServer((req, res) => {
         res.end(data);
     });
 });
+
+// Get port from args or default to 4000
+const PORT = process.argv[2] || 4000;
 
 server.listen(PORT, () => {
     console.log('Server running on http://localhost:' + PORT);

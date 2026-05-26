@@ -1035,13 +1035,15 @@ function spawnEnemy() {
     if (wave >= 3) types.push('fighter', 'bomber', 'rammer');
     if (wave >= 5 && wave % 10 !== 0) types.push('boss');
     if (wave >= 15 && wave % 10 !== 9 && wave % 10 !== 0) {
-        // 70% heart boss, 30% octopus ratio - increased frequency by 30%
-        // Add 2 entries instead of 1 for ~30% more mid-boss spawns
+        // 70% heart boss, 30% octopus - mutually exclusive per spawn cycle
         if (Math.random() < 0.3) {
-            types.push('octopus', 'octopus');
-        } else {
-            types.push('boss', 'boss'); // double boss entries for 70% ratio
+            types.push('octopus');
+            // Remove heart bosses when octopus is chosen
+            for (let ti = types.length - 1; ti >= 0; ti--) {
+                if (types[ti] === 'boss') types.splice(ti, 1);
+            }
         }
+        // 70% chance: heart boss stays (already added above)
     }
     
     const type = types[Math.floor(Math.random() * types.length)];
@@ -1072,7 +1074,7 @@ function spawnEnemy() {
             break;
         case 'octopus':
             // Alien octopus mid-boss (from wave 15) - stays at top, attacks with tentacles
-            enemy.hp = 10 + Math.floor(wave * 2.5);
+            enemy.hp = Math.floor((20 + wave * 5) * 0.5);
             enemy.maxHp = enemy.hp;
             enemy.speed = 0;
             enemy.score = 700;
@@ -1359,7 +1361,7 @@ function update() {
         }
         spawnBoost--;
     } else {
-        const spawnRate = Math.max(12, 90 - wave * 5);
+        const spawnRate = Math.max(12, 80 - wave * 4);
         if (frameCount % spawnRate === 0) {
             spawnEnemy();
             lastSpawnFrame = frameCount;
@@ -1475,13 +1477,13 @@ function update() {
             if (!tentacle.active) { octopusTentacles.splice(ti, 1); continue; }
             
             if (tentacle.extending) {
-                tentacle.length += 1.8;
+                tentacle.length += 1.0;
                 if (tentacle.length >= tentacle.maxLength) {
                     tentacle.extending = false;
                     tentacle.retracting = true;
                 }
             } else if (tentacle.retracting) {
-                tentacle.length -= 3;
+                tentacle.length -= 2;
                 if (tentacle.length <= 0) {
                     tentacle.active = false;
                     octopusTentacles.splice(ti, 1);
@@ -1619,7 +1621,7 @@ function update() {
                     if (enemy.hp <= 0) {
                         score += enemy.score;
                         createExplosion(enemy.x, enemy.y);
-                        if (enemy.isWaveBoss) {
+                        if (enemy.isWaveBoss || enemy.type === 'boss' || enemy.type === 'octopus') {
                             // Boss defeated - spawn V powerup
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
@@ -1729,7 +1731,7 @@ function update() {
                 break;
         case 'octopus':
             // Alien octopus - stationary at top, attacks with tentacles only
-            enemy.phase += 0.03;
+            enemy.phase += 0.012;
             // Auto-remove after lifetime (30 sec = ~1800 frames) to prevent accumulation
             enemy._lifetime = (enemy._lifetime || 0) + 1;
             if (enemy._lifetime > 900) {
@@ -1737,8 +1739,8 @@ function update() {
                 enemies.splice(ei, 1);
                 break;
             }
-            // Gentle sway at top position
-            enemy.x += Math.sin(enemy.phase) * 120;
+            // Smooth left-right oscillation across screen
+            enemy.x = GAME_WIDTH / 2 + Math.sin(enemy.phase) * 170;
             // Stay fixed at top
             enemy.y = 70;
             
@@ -1746,7 +1748,7 @@ function update() {
             enemy.shootCooldown--;
             if (enemy.shootCooldown <= 0) {
                 // Launch tentacle strike toward player
-                const maxReach = Math.min(player.y - enemy.y - 20, GAME_HEIGHT * 0.5);
+                const maxReach = Math.min(player.y - enemy.y - 20, GAME_HEIGHT * 0.35);
                 octopusTentacles.push({
                     ownerId: enemy._id,
                     x: enemy.x,
@@ -1759,7 +1761,7 @@ function update() {
                     targetX: player.x,
                     targetY: player.y - 30
                 });
-                enemy.shootCooldown = 130 + Math.random() * 50; // Even longer interval for balance
+                enemy.shootCooldown = 200 + Math.random() * 80; // Even longer interval for balance
             }
             break;
         }
