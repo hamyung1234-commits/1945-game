@@ -2,31 +2,38 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
+const PORT = 4012;
+
+const mimeTypes = {
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.css': 'text/css',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.json': 'application/json',
+    '.txt': 'text/plain',
+};
+
 const server = http.createServer((req, res) => {
     let filePath = req.url === '/' ? '/index.html' : req.url;
-    filePath = path.join(__dirname, filePath);
+    filePath = '.' + filePath;
     
     const ext = path.extname(filePath);
-    const contentTypes = {
-        '.html': 'text/html',
-        '.js': 'application/javascript',
-        '.css': 'text/css'
-    };
+    const contentType = mimeTypes[ext] || 'application/octet-stream';
     
     fs.readFile(filePath, (err, data) => {
         if (err) {
-            res.writeHead(404);
-            res.end('Not found');
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('404 Not Found');
             return;
         }
-        res.writeHead(200, { 'Content-Type': contentTypes[ext] || 'text/plain' });
+        res.writeHead(200, { 'Content-Type': contentType });
         res.end(data);
     });
 });
 
-// Get port from args or default to 4000
-const PORT = process.argv[2] || 4000;
-
 server.listen(PORT, () => {
-    console.log('Server running on http://localhost:' + PORT);
+    console.log('Server on http://localhost:' + PORT);
 });

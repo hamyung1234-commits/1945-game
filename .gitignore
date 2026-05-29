@@ -24,3 +24,50 @@ docs/
 src/
 tests/
 project.json
+
+# All temporary debug/diagnostic scripts (_*.js)
+_*.js
+_*.ts
+_*.bat
+_*.py
+_*.ps1
+_*.sh
+
+# Diagnostic outputs
+_*.txt
+_*.md
+
+# Raw dumps
+*_output.txt
+*_out.txt
+scan*.txt
+verify*.txt
+test_output.txt
+*_diag.txt
+*_orig.txt
+*_full.txt
+check_copy.txt
+d.txt
+t.js
+game_backup_test.txt
+game_head.txt
+test.txt
+test_output.txt
+
+# Batch deploy scripts (not needed for repo)
+FIX_AND_START.bat
+FIX_BLANK_SCREEN.bat
+FIX_BOMB.bat
+RUN-MISSILE.bat
+RUN_7LEVEL_PATCH.bat
+deploy.bat
+deploy.sh
+upload-to-github.bat
+push-to-github.ps1
+apply_fix.bat
+start_server.bat
+
+# Patch tool
+patch_tool.html
+server_patch.js
+server_patched.js
