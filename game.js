@@ -2777,56 +2777,104 @@ function drawLaserBeam() {
     const startX = player.x;
     const startY = player.y - player.height / 2;
     
-    // Converted from forEach to for (reverse for safe splice)
+    // Laser colors based on level
+    const laserColors = [
+        { outer: 'rgba(100, 200, 255, ', core: '#88CCFF', inner: '#CCEEFF', glow: '0, 200, 255' },  // Lv1: Cyan
+        { outer: 'rgba(80, 180, 255, ', core: '#66BBFF', inner: '#BBEEFF', glow: '0, 180, 255' },   // Lv2: Blue
+        { outer: 'rgba(150, 130, 255, ', core: '#AA88FF', inner: '#DDCCFF', glow: '130, 100, 255' }, // Lv3: Purple
+        { outer: 'rgba(255, 180, 50, ', core: '#FFAA22', inner: '#FFEEAA', glow: '255, 160, 0' },   // Lv4: Gold
+        { outer: 'rgba(255, 80, 80, ', core: '#FF4444', inner: '#FFAAAA', glow: '255, 50, 50' },    // Lv5: Red
+    ];
+    const lc = laserColors[Math.min(laserLevel, laserColors.length - 1)];
+    
     for (let beamIdx = laserBeams.length - 1; beamIdx >= 0; beamIdx--) {
         const beam = laserBeams[beamIdx];
-        if (!beam.targetEnemy) return;
+        if (!beam.targetEnemy) continue;
         
         const endX = beam.targetX;
         const endY = beam.targetY;
         
         ctx.save();
         
-        // Slight rubber band curve (each beam has slightly different phase)
         const dist = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
         const midX = (startX + endX) / 2;
         const midY = (startY + endY) / 2;
-        const curveOffset = Math.min(dist * 0.08, 30);
+        const curveOffset = Math.min(dist * 0.06, 25);
         const perpX = -(endY - startY) / (dist || 1) * curveOffset;
         const perpY = (endX - startX) / (dist || 1) * curveOffset;
-        const phase = frameCount * 0.03 + beamIdx * 1.5;
+        const phase = frameCount * 0.04 + beamIdx * 1.5;
         const ctrlX = midX + perpX * Math.sin(phase);
         const ctrlY = midY + perpY * Math.sin(phase);
         
-        // Outer subtle glow
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-        ctx.lineWidth = 5;
+        // Layer 1: Wide ambient glow
+        ctx.shadowColor = 'rgb(' + lc.glow + ')';
+        ctx.shadowBlur = 18;
+        ctx.strokeStyle = lc.outer + '0.08)';
+        ctx.lineWidth = 8 + laserLevel;
         ctx.beginPath();
         ctx.moveTo(startX, startY);
         ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
         ctx.stroke();
         
-        // Core beam (thicker at higher laser levels)
-        const beamThickness = 2.2 + laserLevel * 0.8;
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        // Layer 2: Outer beam
+        ctx.shadowBlur = 12;
+        ctx.strokeStyle = lc.outer + '0.18)';
+        ctx.lineWidth = 5 + laserLevel * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+        ctx.stroke();
+        
+        // Layer 3: Main beam
+        const beamThickness = 2.5 + laserLevel * 0.7;
+        ctx.shadowBlur = 8;
+        ctx.strokeStyle = lc.core;
         ctx.lineWidth = beamThickness;
         ctx.beginPath();
         ctx.moveTo(startX, startY);
         ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
         ctx.stroke();
         
-        // Bright center line
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = beamThickness * 0.55;
+        // Layer 4: Bright inner core
+        ctx.shadowBlur = 4;
+        ctx.strokeStyle = lc.inner;
+        ctx.lineWidth = beamThickness * 0.45;
         ctx.beginPath();
         ctx.moveTo(startX, startY);
         ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
         ctx.stroke();
         
-        // Small glow at impact point
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        // Layer 5: White hot center
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = beamThickness * 0.2;
         ctx.beginPath();
-        ctx.arc(endX, endY, 4, 0, Math.PI * 2);
+        ctx.moveTo(startX, startY);
+        ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+        ctx.stroke();
+        
+        // Pulsing energy node at midpoint
+        const pulseAlpha = 0.4 + Math.sin(frameCount * 0.15 + beamIdx) * 0.3;
+        ctx.fillStyle = lc.outer + pulseAlpha + ')';
+        ctx.shadowColor = 'rgb(' + lc.glow + ')';
+        ctx.shadowBlur = 14;
+        ctx.beginPath();
+        ctx.arc(ctrlX, ctrlY, 3 + laserLevel, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Impact point glow
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = lc.core;
+        ctx.beginPath();
+        ctx.arc(endX, endY, 5 + laserLevel * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Impact white center
+        ctx.fillStyle = '#FFFFFF';
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.arc(endX, endY, 1.5, 0, Math.PI * 2);
         ctx.fill();
         
         ctx.restore();
@@ -3919,36 +3967,80 @@ function drawPlayer() {
     }
     
     function drawBullet(bullet, isEnemy) {
-        ctx.fillStyle = isEnemy ? COLORS.enemyBullet : COLORS.bullet;
+        ctx.save();
         
         if (isEnemy) {
             // Enemy bullet - fluorescent pink circle with glow
+            ctx.fillStyle = COLORS.enemyBullet;
             ctx.shadowColor = COLORS.enemyBullet;
             ctx.shadowBlur = 14;
-            // Outer glow ring
             ctx.beginPath();
             ctx.arc(bullet.x, bullet.y, bullet.width / 2 + 3, 0, Math.PI * 2);
             ctx.fill();
-            // Core bright spot
             ctx.shadowBlur = 20;
             ctx.fillStyle = '#FF69B4';
             ctx.beginPath();
             ctx.arc(bullet.x, bullet.y, bullet.width / 2, 0, Math.PI * 2);
             ctx.fill();
-            // White hot center
             ctx.shadowBlur = 0;
             ctx.fillStyle = '#FFFFFF';
             ctx.beginPath();
             ctx.arc(bullet.x, bullet.y, bullet.width / 4, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = COLORS.enemyBullet;
         } else {
-            // Player bullet - rectangle with glow
-            ctx.shadowColor = COLORS.bullet;
+            // Player bullet - glowing energy bolt (modern mobile shooter style)
+            const bx = bullet.x;
+            const by = bullet.y;
+            const bw = bullet.width || 4;
+            const bh = bullet.height || 16;
+            const power = bullet.power || 1;
+            
+            // Determine color based on power level for visual variety
+            let boltColor, boltCore, boltGlow;
+            if (power >= 2.0) {
+                boltColor = '#FFD700'; boltCore = '#FFFFFF'; boltGlow = 'rgba(255, 215, 0, ';
+            } else if (power >= 1.5) {
+                boltColor = '#FFAA00'; boltCore = '#FFEE88'; boltGlow = 'rgba(255, 170, 0, ';
+            } else {
+                boltColor = '#FF8800'; boltCore = '#FFDD66'; boltGlow = 'rgba(255, 136, 0, ';
+            }
+            
+            // Outer glow halo
+            ctx.shadowColor = boltColor;
+            ctx.shadowBlur = 10 + power * 2;
+            ctx.fillStyle = boltGlow + (0.25 + power * 0.08) + ')';
+            ctx.fillRect(bx - bw - 3, by - bh/2 - 3, (bw + 3) * 2, bh + 6);
+            
+            // Mid glow layer
+            ctx.shadowBlur = 6 + power;
+            ctx.fillStyle = boltGlow + '0.55)';
+            ctx.fillRect(bx - bw - 1, by - bh/2 - 1, (bw + 1) * 2, bh + 2);
+            
+            // Main bolt body with gradient
+            const boltGrad = ctx.createLinearGradient(bx, by - bh/2, bx, by + bh/2);
+            boltGrad.addColorStop(0, boltCore);
+            boltGrad.addColorStop(0.3, boltColor);
+            boltGrad.addColorStop(0.7, boltColor);
+            boltGrad.addColorStop(1, boltCore);
+            ctx.fillStyle = boltGrad;
+            ctx.shadowBlur = 3;
+            ctx.fillRect(bx - bw, by - bh/2, bw * 2, bh);
+            
+            // White-hot core line
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(bx - bw * 0.35, by - bh * 0.4, bw * 0.7, bh * 0.8);
+            
+            // Sparkle tip (leading edge)
+            ctx.fillStyle = boltCore;
+            ctx.shadowColor = boltColor;
             ctx.shadowBlur = 8;
-            ctx.fillRect(bullet.x - bullet.width / 2, bullet.y - bullet.height / 2, bullet.width, bullet.height);
+            ctx.beginPath();
+            ctx.arc(bx, by - bh/2, bw * 0.9, 0, Math.PI * 2);
+            ctx.fill();
             ctx.shadowBlur = 0;
         }
+        ctx.restore();
     }
     
     function drawPowerup(pu) {
@@ -4198,59 +4290,108 @@ function drawPlayer() {
             ctx.save();
             ctx.translate(m.x, m.y);
             
-            // Rotate based on velocity direction
             const angle = Math.atan2(m.vy, m.vx) + Math.PI / 2;
             ctx.rotate(angle);
             
-            // Scale based on missile size (ultimate missiles are 50% smaller)
-            const scale = m.w / 12; // 12 is base width
+            const scale = m.w / 12;
             const hw = 6.75 * scale;
             const hh = 15 * scale;
             
-            // Missile body
-            ctx.fillStyle = '#FF6600';
+            // Energy trail (behind missile)
+            const trailGrad = ctx.createLinearGradient(0, hh * 0.5, 0, hh * 2.2);
+            trailGrad.addColorStop(0, 'rgba(255, 180, 50, 0.6)');
+            trailGrad.addColorStop(0.4, 'rgba(255, 100, 20, 0.3)');
+            trailGrad.addColorStop(1, 'rgba(255, 50, 0, 0)');
+            ctx.fillStyle = trailGrad;
+            ctx.beginPath();
+            ctx.moveTo(-hw * 1.2, hh * 0.6);
+            ctx.lineTo(0, hh * 2.5 + Math.random() * hh * 0.3);
+            ctx.lineTo(hw * 1.2, hh * 0.6);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Outer glow aura
+            ctx.shadowColor = '#FFAA00';
+            ctx.shadowBlur = hh * 1.2;
+            ctx.fillStyle = 'rgba(255, 170, 0, 0.15)';
+            ctx.fillRect(-hw * 1.3, -hh * 1.1, hw * 2.6, hh * 2.2);
+            
+            // Missile body - gradient
+            const bodyGrad = ctx.createLinearGradient(-hw, 0, hw, 0);
+            bodyGrad.addColorStop(0, '#CC3300');
+            bodyGrad.addColorStop(0.3, '#FF5500');
+            bodyGrad.addColorStop(0.5, '#FF7722');
+            bodyGrad.addColorStop(0.7, '#FF5500');
+            bodyGrad.addColorStop(1, '#CC3300');
+            ctx.fillStyle = bodyGrad;
+            ctx.shadowBlur = 6;
             ctx.fillRect(-hw, -hh, hw * 2, hh * 2);
             
-            // Missile nose cone
-            ctx.fillStyle = '#FF3300';
+            // Body highlight stripe
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.fillRect(-hw * 0.3, -hh * 0.8, hw * 0.6, hh * 1.6);
+            
+            // Nose cone with gradient
+            const noseGrad = ctx.createLinearGradient(0, -hh * 1.35, 0, -hh * 0.5);
+            noseGrad.addColorStop(0, '#FFEE88');
+            noseGrad.addColorStop(0.5, '#FF6600');
+            noseGrad.addColorStop(1, '#CC3300');
+            ctx.fillStyle = noseGrad;
+            ctx.shadowBlur = 4;
             ctx.beginPath();
-            ctx.moveTo(0, -hh * 1.35);
-            ctx.lineTo(-hw, -hh * 0.67);
-            ctx.lineTo(hw, -hh * 0.67);
+            ctx.moveTo(0, -hh * 1.4);
+            ctx.lineTo(-hw, -hh * 0.6);
+            ctx.lineTo(hw, -hh * 0.6);
             ctx.closePath();
             ctx.fill();
             
-            // Fins
-            ctx.fillStyle = '#CC4400';
+            // Fins (swept-back style)
+            ctx.fillStyle = '#AA2200';
+            ctx.shadowBlur = 3;
+            ctx.shadowColor = '#FF4400';
             ctx.beginPath();
-            ctx.moveTo(-hw, hh * 0.67);
-            ctx.lineTo(-hw * 2, hh);
-            ctx.lineTo(-hw, hh);
+            ctx.moveTo(-hw, hh * 0.5);
+            ctx.lineTo(-hw * 2.2, hh * 1.3);
+            ctx.lineTo(-hw * 0.5, hh * 1.0);
             ctx.closePath();
             ctx.fill();
             ctx.beginPath();
-            ctx.moveTo(hw, hh * 0.67);
-            ctx.lineTo(hw * 2, hh);
-            ctx.lineTo(hw, hh);
-            ctx.closePath();
-            ctx.fill();
-            
-            // Flame
-            ctx.fillStyle = '#4488FF';
-            ctx.beginPath();
-            ctx.moveTo(-hw * 0.78, hh);
-            ctx.lineTo(0, hh * 1.6 + Math.random() * hh * 0.45);
-            ctx.lineTo(hw * 0.78, hh);
+            ctx.moveTo(hw, hh * 0.5);
+            ctx.lineTo(hw * 2.2, hh * 1.3);
+            ctx.lineTo(hw * 0.5, hh * 1.0);
             ctx.closePath();
             ctx.fill();
             
-            // Glow
-            ctx.shadowColor = '#FF6600';
-            ctx.shadowBlur = hh * 0.9;
-            ctx.fillStyle = 'rgba(255, 102, 0, 0.3)';
-            ctx.fillRect(-hw, -hh, hw * 2, hh * 2);
+            // Engine exhaust flame
+            const flameH = hh * 1.3 + Math.random() * hh * 0.5;
+            const flameGrad = ctx.createLinearGradient(0, hh, 0, hh + flameH);
+            flameGrad.addColorStop(0, '#FFFFFF');
+            flameGrad.addColorStop(0.2, '#88CCFF');
+            flameGrad.addColorStop(0.5, '#3366FF');
+            flameGrad.addColorStop(1, 'rgba(50, 100, 255, 0)');
+            ctx.fillStyle = flameGrad;
             ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.moveTo(-hw * 0.7, hh);
+            ctx.lineTo(0, hh + flameH);
+            ctx.lineTo(hw * 0.7, hh);
+            ctx.closePath();
+            ctx.fill();
             
+            // Inner flame core
+            const innerFlameH = flameH * 0.5;
+            const ifGrad = ctx.createLinearGradient(0, hh, 0, hh + innerFlameH);
+            ifGrad.addColorStop(0, '#FFFFFF');
+            ifGrad.addColorStop(1, 'rgba(200, 220, 255, 0)');
+            ctx.fillStyle = ifGrad;
+            ctx.beginPath();
+            ctx.moveTo(-hw * 0.3, hh);
+            ctx.lineTo(0, hh + innerFlameH);
+            ctx.lineTo(hw * 0.3, hh);
+            ctx.closePath();
+            ctx.fill();
+            
+            ctx.shadowBlur = 0;
             ctx.restore();
         }
         
@@ -4260,30 +4401,51 @@ function drawPlayer() {
             ctx.save();
             ctx.translate(um.x, um.y);
             
-            // Glowing aura
-            ctx.shadowColor = "#FFAA00";
-            ctx.shadowBlur = 20;
+            // Massive energy aura
+            ctx.shadowColor = "#FFD700";
+            ctx.shadowBlur = 30;
             
-            // Missile body
-            ctx.fillStyle = "#FFAA00";
+            // Outer pulse ring
+            const pulse = Math.sin(frameCount * 0.3) * 0.3 + 0.7;
+            ctx.strokeStyle = "rgba(255, 200, 50, " + (pulse * 0.6) + ")";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(0, 0, um.w * 2.0, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // Mid pulse ring
+            ctx.strokeStyle = "rgba(255, 255, 100, " + (pulse * 0.4) + ")";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(0, 0, um.w * 1.3, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // Missile body - golden gradient
+            const ugGrad = ctx.createLinearGradient(-um.w/2, 0, um.w/2, 0);
+            ugGrad.addColorStop(0, '#CC8800');
+            ugGrad.addColorStop(0.3, '#FFAA00');
+            ugGrad.addColorStop(0.5, '#FFD700');
+            ugGrad.addColorStop(0.7, '#FFAA00');
+            ugGrad.addColorStop(1, '#CC8800');
+            ctx.fillStyle = ugGrad;
             ctx.fillRect(-um.w/2, -um.h/2, um.w, um.h);
             
+            // Body stripe
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.fillRect(-um.w * 0.15, -um.h * 0.4, um.w * 0.3, um.h * 0.8);
+            
             // Gold nose cone
-            ctx.fillStyle = "#FFD700";
+            const unGrad = ctx.createLinearGradient(0, -um.h/2 - 6, 0, -um.h/2);
+            unGrad.addColorStop(0, '#FFFFFF');
+            unGrad.addColorStop(0.4, '#FFEE66');
+            unGrad.addColorStop(1, '#FFAA00');
+            ctx.fillStyle = unGrad;
             ctx.beginPath();
-            ctx.moveTo(0, -um.h/2 - 4);
+            ctx.moveTo(0, -um.h/2 - 6);
             ctx.lineTo(-um.w/2, -um.h/2 + 2);
             ctx.lineTo(um.w/2, -um.h/2 + 2);
             ctx.closePath();
             ctx.fill();
-            
-            // Pulsing effect
-            const pulse = Math.sin(frameCount * 0.3) * 0.3 + 0.7;
-            ctx.strokeStyle = "rgba(255, 200, 50, " + pulse + ")";
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(0, 0, um.w * 1.5, 0, Math.PI * 2);
-            ctx.stroke();
             
             ctx.shadowBlur = 0;
             ctx.restore();
