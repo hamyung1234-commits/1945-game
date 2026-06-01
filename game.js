@@ -477,6 +477,7 @@ let waveFlash = null;
 let bossActive = false;
 let bossDefeated = false;
 let bossWaveNumber = 0;
+let bossSpawned = false;  // Guard: boss actually spawned this stage
 let midBossStreak = 0;
 
 // === HYPERSPACE / STAGE SYSTEM ===
@@ -899,6 +900,7 @@ function startGame() {
     stageTimer = 0;
     bossDefeated = false;
     bossActive = false;
+    bossSpawned = false;
     bossWaveNumber = 0;
     bossClaws = [];
     bossClawCount = 1;
@@ -1093,10 +1095,10 @@ function playerShoot() {
 }
 
 function spawnEnemy() {
-    // Boss wave check: at wave 9,19,29... (appears before next 10th wave)
+    // Boss wave check: boss appears at sub-wave 10 of each stage
+    // Also handle case where stageWave overshot due to timer
     // Force new boss spawn - remove any old boss that's still alive
-    // Boss appears at sub-wave 10 of each stage
-    if (stageWave === 10 && bossWaveNumber < currentStage) {
+    if ((stageWave === STAGE_WAVES || stageWave > STAGE_WAVES) && bossWaveNumber < currentStage && !bossActive) {
         // Remove any previous wave boss that's still alive (prevents spawn blocking)
         if (bossActive) {
             for (let ei = enemies.length - 1; ei >= 0; ei--) {
@@ -1108,6 +1110,7 @@ function spawnEnemy() {
         }
         bossActive = true;
         bossDefeated = false;
+        bossSpawned = true;  // Guard: boss actually spawned
         bossWaveNumber = currentStage;
         
         // Boss HP: first boss = mid-boss * 3 (20+10*5=70, so 210)
@@ -1143,6 +1146,10 @@ function spawnEnemy() {
         
         // Show boss warning flash
         waveFlash = { active: true, timer: 120, text: 'BOSS' };
+        // Cap stageWave at STAGE_WAVES while boss is alive
+        if (stageWave > STAGE_WAVES) stageWave = STAGE_WAVES;
+        // Reset stageTimer to give boss fight full duration
+        stageTimer = 0;
         return;
     }
     
@@ -1153,7 +1160,7 @@ function spawnEnemy() {
     if (wave >= 3) { types.push('fighter', 'bomber', 'rammer'); }
     if (wave >= 5 && wave % 10 !== 0) types.push('boss');
     // At wave 15+, reduce small enemy types by 50% (prevent overwhelming spawns)
-    if (currentStage >= 2 && stageWave !== 10) {
+    if (currentStage >= 2 && stageWave !== STAGE_WAVES) {
         // Keep only half the small enemy entries for better balance
         types = ['scout', 'fighter', 'bomber'];
         // 70% heart boss, 30% octopus - mutually exclusive per spawn cycle
@@ -1510,13 +1517,19 @@ function update() {
     if (stageTimer > STAGE_WAVE_DURATION) {
         stageWave++;
         stageTimer = 0;
-        bossDefeated = false;
+        // Do NOT reset bossDefeated here — boss kill sets it, and we check it below
         wave = currentStage * 10 + stageWave; // keep legacy wave roughly in sync
-        // Show wave number flash
-        // Planet set is tied to stage, don't regenerate
         generatePlanetSet(currentPlanetIndex);
         // Rapid enemy respawn after wave increase
         spawnBoost = 60;
+    }
+    
+    // === FORCE BOSS SPAWN if stageWave has passed the boss wave ===
+    // This handles cases where stageWave increments past 10 without a boss appearing
+    if (stageWave >= STAGE_WAVES && bossWaveNumber < currentStage && !bossActive) {
+        // Boss was never spawned for this stage — force it now
+        stageWave = STAGE_WAVES; // Reset to boss wave
+        // The next spawnEnemy call will handle boss spawning
     }
     
     // Spawn enemies (always runs - enemies never stop!)
@@ -3030,6 +3043,7 @@ function updateHyperspace() {
         stageTimer = 0;
         wave = currentStage * 10 + 1;
         bossDefeated = false;
+        bossSpawned = false;  // Reset for next stage
         bossActive = false;
         bossClawCount = currentStage + 1;
         
@@ -3039,7 +3053,7 @@ function updateHyperspace() {
         
         // Reset player position and state
         player.y = GAME_HEIGHT - 80;
-        player.invincible = false;
+        player.invincible = true;
         player.visible = true;
         player.invincibleTimer = 60; // brief invincibility after jump
         bossDefeated = false; // prevent re-triggering hyperspace
