@@ -1517,8 +1517,9 @@ function update() {
     if (stageTimer > STAGE_WAVE_DURATION) {
         stageWave++;
         stageTimer = 0;
-        // Do NOT reset bossDefeated here — boss kill sets it, and we check it below
-        wave = currentStage * 10 + stageWave; // keep legacy wave roughly in sync
+        bossDefeated = false;
+        bossSpawned = false;
+        wave = currentStage * 10 + stageWave; // keep legacy wave roughly in sync // keep legacy wave roughly in sync
         generatePlanetSet(currentPlanetIndex);
         // Rapid enemy respawn after wave increase
         spawnBoost = 60;
@@ -1550,9 +1551,8 @@ function update() {
         }
     }
     
-    // HYPERSPACE TRIGGER: If boss was just defeated, start hyperspace
-    // Guard: boss must have actually spawned for this stage (bossWaveNumber >= currentStage)
-    if (bossDefeated && !hyperspaceActive && !deathActive && bossWaveNumber >= currentStage) {
+    // HYPERSPACE TRIGGER: Boss must have actually spawned AND been defeated
+    if (bossDefeated && bossSpawned && !hyperspaceActive && !deathActive) {
         onBossDefeated();
     }
     
@@ -3056,7 +3056,6 @@ function updateHyperspace() {
         player.invincible = true;
         player.visible = true;
         player.invincibleTimer = 60; // brief invincibility after jump
-        bossDefeated = false; // prevent re-triggering hyperspace
         
         // Show new stage flash
         waveFlash = { active: true, timer: 120, text: 'STAGE ' + currentStage };
