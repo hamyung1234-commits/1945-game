@@ -1508,8 +1508,7 @@ function update() {
         bossDefeated = false;
         wave = currentStage * 10 + stageWave; // keep legacy wave roughly in sync
         // Show wave number flash
-        const displayWave = (currentStage - 1) * 10 + stageWave;
-        // Use planet set but don't regenerate (planet is tied to stage)
+        // Planet set is tied to stage, don't regenerate
         generatePlanetSet(currentPlanetIndex);
         // Rapid enemy respawn after wave increase
         spawnBoost = 60;
@@ -5008,10 +5007,7 @@ function drawPlayer() {
         ctx.textAlign = 'right';
         ctx.fillText(`HI ${highScore.toString().padStart(6, '0')}`, GAME_WIDTH - 15, 30);
         
-        // Wave
-        ctx.textAlign = 'center';
-        ctx.font = '10px "Press Start 2P", monospace';
-        ctx.fillText('STAGE ' + currentStage + ' W' + stageWave, GAME_WIDTH / 2, 30);
+        // Stage indicator (waveFlash shows BOSS / STAGE announcements)
         
         // V Power - very faint, small pulsing countdown number
         if (player.vPowerActive) {
