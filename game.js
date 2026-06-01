@@ -897,6 +897,11 @@ function startGame() {
     currentStage = 1;
     stageWave = 1;
     stageTimer = 0;
+    bossDefeated = false;
+    bossActive = false;
+    bossWaveNumber = 0;
+    bossClaws = [];
+    bossClawCount = 1;
     wave = 1;  // keep wave for compatibility with existing code that reads it
     currentPlanetIndex = 0;
     generatePlanetSet(currentPlanetIndex);
@@ -987,7 +992,7 @@ function useBomb() {
     // Reverse iteration for safe splice removal
     for (let ei = enemies.length - 1; ei >= 0; ei--) {
         const enemy = enemies[ei];
-        if (enemy.isWaveBoss || enemy.type === 'boss' || enemy.type === 'octopus') {
+        if (enemy.isWaveBoss) {
             // ALL boss types take 15% of max HP damage from bomb - NEVER die from bomb
             const bombDamage = Math.floor(enemy.maxHp * 0.15);
             enemy.hp -= bombDamage;
@@ -1533,7 +1538,8 @@ function update() {
     }
     
     // HYPERSPACE TRIGGER: If boss was just defeated, start hyperspace
-    if (bossDefeated && !hyperspaceActive && !deathActive) {
+    // Guard: boss must have actually spawned for this stage (bossWaveNumber >= currentStage)
+    if (bossDefeated && !hyperspaceActive && !deathActive && bossWaveNumber >= currentStage) {
         onBossDefeated();
     }
     
@@ -1871,7 +1877,7 @@ function update() {
                         comboTimer = 90;
                         if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
                         createExplosion(enemy.x, enemy.y);
-                        if (enemy.isWaveBoss || enemy.type === 'boss' || enemy.type === 'octopus') {
+                        if (enemy.isWaveBoss) {
                             // Boss defeated - spawn V powerup
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
@@ -3034,7 +3040,9 @@ function updateHyperspace() {
         // Reset player position and state
         player.y = GAME_HEIGHT - 80;
         player.invincible = false;
+        player.visible = true;
         player.invincibleTimer = 60; // brief invincibility after jump
+        bossDefeated = false; // prevent re-triggering hyperspace
         
         // Show new stage flash
         waveFlash = { active: true, timer: 120, text: 'STAGE ' + currentStage };
