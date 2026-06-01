@@ -1257,7 +1257,8 @@ function spawnEnemy() {
             enemy.shootCooldown = 20;
             break;
         case 'rammer':
-            enemy.hp = Math.floor((4 + wave) * (0.4 + 0.2 * currentStage));
+            enemy.hp = 2 + Math.floor(currentStage * 0.8);
+            // HP scales: Stage1=2, Stage2=3, Stage3=4, Stage5=6, Stage10=10
             enemy.maxHp = enemy.hp;
             enemy.speed = ENEMY_BASE_SPEED * 0.864;
             enemy.score = 400;
@@ -2947,10 +2948,9 @@ function onBossDefeated() {
     bossClaws = [];
     octopusTentacles = [];
     bossActive = false;
-    if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+    bossIsFinalBoss = false;
     
     // Start hyperspace jump
-    bossIsFinalBoss = false;
     hyperspaceActive = true;
     hyperspaceTimer = HYPERSPACE_TOTAL;
     hyperspacePhase = 0;
@@ -4949,7 +4949,7 @@ function drawPlayer() {
             // Find the boss
             let bossEnemy = null;
             for (let ei = enemies.length - 1; ei >= 0; ei--) {
-                if (bossIsFinalBoss && enemies[ei].isWaveBoss || enemies[ei].type === 'boss' || enemies[ei].type === 'octopus') {
+                if (enemies[ei].isWaveBoss && enemies[ei].type === 'boss') {
                     bossEnemy = enemies[ei];
                     break;
                 }
