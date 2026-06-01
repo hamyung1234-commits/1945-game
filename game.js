@@ -1516,6 +1516,11 @@ function update() {
     }
     
     stageTimer++;
+
+    // HYPERSPACE TRIGGER: Check BEFORE stageWave overflow resets bossDefeated
+    if (bossDefeated && bossSpawned && !hyperspaceActive && !deathActive) {
+        onBossDefeated();
+    }
     
     // Stage wave progression (70% of original time)
     if (stageTimer > STAGE_WAVE_DURATION) {
@@ -1555,10 +1560,6 @@ function update() {
         }
     }
     
-    // HYPERSPACE TRIGGER: Boss must have actually spawned AND been defeated
-    if (bossDefeated && bossSpawned && !hyperspaceActive && !deathActive) {
-        onBossDefeated();
-    }
     
     // SAFETY NET: If no enemies for too long, force spawn
     noSpawnCounter++;
