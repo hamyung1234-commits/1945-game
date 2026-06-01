@@ -1137,7 +1137,7 @@ function spawnEnemy() {
         enemies.push(bossEnemy);
         
         // Show boss warning flash
-        waveFlash = { active: true, timer: 120, text: 'STAGE ' + currentStage + ' BOSS' };
+        waveFlash = { active: true, timer: 120, text: 'BOSS' };
         return;
     }
     
@@ -1509,7 +1509,6 @@ function update() {
         wave = currentStage * 10 + stageWave; // keep legacy wave roughly in sync
         // Show wave number flash
         const displayWave = (currentStage - 1) * 10 + stageWave;
-        waveFlash = { active: true, timer: 90, text: 'STAGE ' + currentStage + '  WAVE ' + stageWave };
         // Use planet set but don't regenerate (planet is tied to stage)
         generatePlanetSet(currentPlanetIndex);
         // Rapid enemy respawn after wave increase
@@ -2935,21 +2934,20 @@ function onBossDefeated() {
     hyperspacePhase = 0;
     player.invincible = true;
     
-    // Generate hyperspace star data
+    // Generate hyperspace star data for rain effect (top→bottom)
     hyperspaceStars = [];
-    const cx = GAME_WIDTH / 2;
-    const cy = GAME_HEIGHT * 0.3;
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 250; i++) {
+        const starY = -Math.random() * GAME_HEIGHT * 0.5; // Start above screen
         hyperspaceStars.push({
             x: Math.random() * GAME_WIDTH,
-            y: Math.random() * GAME_HEIGHT,
-            size: Math.random() * 3 + 0.5,
+            y: starY,
+            size: Math.random() * 3 + 0.8,
             baseX: Math.random() * GAME_WIDTH,
-            baseY: Math.random() * GAME_HEIGHT,
-            angle: Math.atan2(cy - (Math.random() * GAME_HEIGHT), cx - (Math.random() * GAME_WIDTH)),
-            speed: Math.random() * 3 + 1,
+            baseY: -Math.random() * GAME_HEIGHT,
+            vy: 1.5 + Math.random() * 3, // Downward velocity (starts slow)
+            maxVy: 6 + Math.random() * 5, // Max speed during hyperjump
             trailLength: 0,
-            hue: Math.random() < 0.8 ? 210 : 30  // mostly blue, some warm
+            hue: Math.random() < 0.7 ? 210 : Math.random() < 0.5 ? 180 : 30  // mostly blue/cyan
         });
     }
     
@@ -2960,37 +2958,57 @@ function onBossDefeated() {
 
 function updateHyperspace() {
     hyperspaceTimer--;
+    const progress = hyperspaceTimer / HYPERSPACE_TOTAL; // 1→0
     
-    if (hyperspaceTimer > HYPERSPACE_TOTAL * 0.75) {
-        // Phase 0: Player flies upward (1s)
+    // === 3-PHASE ACCELERATION / DECELERATION ===
+    // Phase 0 (progress 1.0→0.75): Player rises, stars slowly accelerate downward
+    // Phase 1 (progress 0.75→0.25): Full hyperspace - max speed star rain
+    // Phase 2 (progress 0.25→0.0): Deceleration - stars slow, trails shrink to dots
+    
+    if (progress > 0.75) {
+        // Phase 0: ACCELERATION - player rises, stars begin falling
         hyperspacePhase = 0;
-        player.y -= 3.5;
-        if (player.y < -50) player.y = -50;
-    } else if (hyperspaceTimer > HYPERSPACE_TOTAL * 0.2) {
-        // Phase 1: Star streak acceleration (2.2s)
+        const p = (progress - 0.75) / 0.25; // 1→0 during this phase
+        player.y = GAME_HEIGHT - 80 - (1 - p) * (GAME_HEIGHT * 0.45);
+        if (player.y < GAME_HEIGHT * 0.25) player.y = GAME_HEIGHT * 0.25;
+    } else if (progress > 0.25) {
+        // Phase 1: FULL HYPERSPACE RAIN - stars at max speed
         hyperspacePhase = 1;
-        if (player.y < -50) player.y = -60;
+        player.y = GAME_HEIGHT * 0.25;
     } else {
-        // Phase 2: Deceleration/arrival (0.8s)
+        // Phase 2: DECELERATION - player descends to landing position
         hyperspacePhase = 2;
-        player.y += 2.5;
+        const p = progress / 0.25; // 0→1 during this phase
+        player.y = GAME_HEIGHT * 0.25 + p * (GAME_HEIGHT - 80 - GAME_HEIGHT * 0.25);
     }
     
-    // Update hyperspace stars
-    const cx = GAME_WIDTH / 2;
-    const cy = GAME_HEIGHT * 0.3;
+    // Update hyperspace stars (top→bottom rain)
     for (let i = hyperspaceStars.length - 1; i >= 0; i--) {
         const s = hyperspaceStars[i];
-        s.x += Math.cos(s.angle) * s.speed * (1 + hyperspacePhase * 2);
-        s.y += Math.sin(s.angle) * s.speed * (1 + hyperspacePhase * 2);
         
-        // Trail length increases with phase
-        s.trailLength = hyperspacePhase * s.speed * 35;
+        // Speed depends on phase
+        if (hyperspacePhase === 0) {
+            s.vy = s.vy + (s.maxVy - s.vy) * 0.05; // lerp toward max
+        } else if (hyperspacePhase === 1) {
+            s.vy = s.maxVy; // full speed
+        } else {
+            s.vy = s.maxVy + (1.5 - s.maxVy) * (1 - (progress / 0.25)); // lerp back to slow
+            s.vy = Math.max(0.5, s.vy);
+        }
         
-        // Reset star if it goes off screen
-        if (s.x < -100 || s.x > GAME_WIDTH + 100 || s.y < -100 || s.y > GAME_HEIGHT + 100) {
-            s.x = s.baseX;
-            s.y = s.baseY;
+        s.y += s.vy;
+        // Slight horizontal wobble for depth
+        s.x += Math.sin(s.y * 0.02 + s.baseX * 0.1) * 0.5;
+        
+        // Trail length proportional to speed
+        s.trailLength = s.vy * 25;
+        
+        // Reset star when it goes below screen
+        if (s.y > GAME_HEIGHT + 50) {
+            s.y = -30 - Math.random() * 40;
+            s.x = Math.random() * GAME_WIDTH;
+            s.baseX = s.x;
+            s.vy = 1.5 + Math.random() * 3;
             s.trailLength = 0;
         }
     }
@@ -3040,122 +3058,151 @@ function drawHyperspace() {
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     
-    const cx = GAME_WIDTH / 2;
-    const cy = GAME_HEIGHT * 0.3;
     const progress = 1 - (hyperspaceTimer / HYPERSPACE_TOTAL);
     
-    // Draw star streaks
+    // === TOP→BOTTOM RAIN STARS ===
     for (let i = hyperspaceStars.length - 1; i >= 0; i--) {
         const s = hyperspaceStars[i];
-        if (s.trailLength < 1) continue;
+        if (s.trailLength < 0.5) {
+            // Draw as tiny dot when barely moving
+            ctx.fillStyle = 'rgba(200, 220, 255, ' + (0.3 + s.vy * 0.1) + ')';
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.size * 0.4, 0, Math.PI * 2);
+            ctx.fill();
+            continue;
+        }
         
         const length = s.trailLength;
-        const endX = s.x - Math.cos(s.angle) * length;
-        const endY = s.y - Math.sin(s.angle) * length;
+        // Trail goes upward from star (star moves down, trail behind = upward)
+        const endY = s.y - length;
         
-        // Trail gradient from bright to transparent
-        const alpha = Math.min(1, length / 100);
-        const hue = s.hue + hyperspacePhase * 15;
-        ctx.strokeStyle = 'hsla(' + hue + ', 80%, ' + (60 + hyperspacePhase * 30) + '%, ' + alpha + ')';
-        ctx.lineWidth = s.size * (1 + hyperspacePhase * 0.5);
-        ctx.shadowColor = 'hsla(' + hue + ', 100%, 70%, ' + (alpha * 0.8) + ')';
-        ctx.shadowBlur = s.size * (2 + hyperspacePhase * 4);
+        // Trail color: bright white-blue, fades with distance
+        const alpha = Math.min(1, length / 120);
+        const hue = s.hue + hyperspacePhase * 10;
+        const lightness = 55 + hyperspacePhase * 25 + s.vy * 3;
+        
+        // Draw the trail line with glow
+        ctx.shadowColor = 'hsla(' + hue + ', 100%, 70%, ' + (alpha * 0.7) + ')';
+        ctx.shadowBlur = s.size * (2 + hyperspacePhase * 2);
+        ctx.strokeStyle = 'hsla(' + hue + ', 80%, ' + lightness + '%, ' + alpha + ')';
+        ctx.lineWidth = s.size * (0.8 + hyperspacePhase * 0.4);
         
         ctx.beginPath();
         ctx.moveTo(s.x, s.y);
-        ctx.lineTo(endX, endY);
+        ctx.lineTo(s.x, endY);
         ctx.stroke();
         
-        // Bright point at head
-        ctx.shadowBlur = s.size * 6;
-        ctx.fillStyle = '#FFFFFF';
+        // Bright head at current position
+        ctx.shadowBlur = s.size * (3 + hyperspacePhase * 3);
+        ctx.fillStyle = 'rgba(255, 255, 255, ' + (0.7 + hyperspacePhase * 0.3) + ')';
         ctx.beginPath();
-        ctx.arc(s.x, s.y, s.size * 0.6, 0, Math.PI * 2);
+        ctx.arc(s.x, s.y, s.size * 0.5, 0, Math.PI * 2);
         ctx.fill();
     }
     
     ctx.shadowBlur = 0;
     ctx.shadowColor = 'transparent';
     
-    // Central light tunnel effect (phase 1+)
+    // === VERTICAL LIGHT STREAK OVERLAY (phase 1) ===
     if (hyperspacePhase >= 1) {
-        const tunnelAlpha = (hyperspacePhase - 1) * 0.4 + progress * 0.3;
-        const tunnelGrad = ctx.createRadialGradient(cx, cy, 10, cx, cy, GAME_HEIGHT);
-        tunnelGrad.addColorStop(0, 'rgba(180, 220, 255, ' + (tunnelAlpha * 0.6) + ')');
-        tunnelGrad.addColorStop(0.3, 'rgba(100, 160, 255, ' + (tunnelAlpha * 0.3) + ')');
-        tunnelGrad.addColorStop(0.6, 'rgba(40, 80, 180, ' + (tunnelAlpha * 0.1) + ')');
-        tunnelGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.fillStyle = tunnelGrad;
+        const overlayAlpha = (hyperspacePhase - 1) * 0.15 + progress * 0.2;
+        // Subtle vertical gradient giving depth
+        const vertGrad = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+        vertGrad.addColorStop(0, 'rgba(0, 10, 30, ' + (overlayAlpha * 0.8) + ')');
+        vertGrad.addColorStop(0.3, 'rgba(20, 40, 80, ' + (overlayAlpha * 0.3) + ')');
+        vertGrad.addColorStop(0.7, 'rgba(40, 60, 120, ' + (overlayAlpha * 0.15) + ')');
+        vertGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = vertGrad;
         ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     }
     
-    // Draw the player ship being pulled up
-    if (player.y > -80) {
+    // === PLAYER SHIP WITH THRUST ===
+    if (player.y > -80 && player.y < GAME_HEIGHT + 100) {
         ctx.save();
         ctx.translate(player.x, player.y);
         
-        // Ship glow
-        const shipGlow = ctx.createRadialGradient(0, 0, 8, 0, 0, 40 + hyperspacePhase * 20);
-        shipGlow.addColorStop(0, 'rgba(255, 255, 255, ' + (0.6 + hyperspacePhase * 0.3) + ')');
-        shipGlow.addColorStop(0.5, 'rgba(100, 180, 255, ' + (0.3 + hyperspacePhase * 0.2) + ')');
-        shipGlow.addColorStop(1, 'rgba(0, 50, 150, 0)');
+        // Ship glow aura
+        const shipGlow = ctx.createRadialGradient(0, 0, 6, 0, 0, 35 + hyperspacePhase * 15);
+        shipGlow.addColorStop(0, 'rgba(255, 255, 255, ' + (0.5 + hyperspacePhase * 0.3) + ')');
+        shipGlow.addColorStop(0.5, 'rgba(100, 180, 255, ' + (0.25 + hyperspacePhase * 0.2) + ')');
+        shipGlow.addColorStop(1, 'rgba(0, 40, 120, 0)');
         ctx.fillStyle = shipGlow;
         ctx.beginPath();
-        ctx.arc(0, 0, 40 + hyperspacePhase * 20, 0, Math.PI * 2);
+        ctx.arc(0, 0, 35 + hyperspacePhase * 15, 0, Math.PI * 2);
         ctx.fill();
         
-        // Simple ship silhouette
+        // Ship silhouette
         ctx.fillStyle = '#FFFFFF';
         ctx.shadowColor = 'rgba(200, 230, 255, 0.9)';
-        ctx.shadowBlur = 15;
+        ctx.shadowBlur = 12 + hyperspacePhase * 3;
         ctx.beginPath();
-        ctx.moveTo(0, -22);
-        ctx.lineTo(-16, 8);
-        ctx.lineTo(-6, 4);
-        ctx.lineTo(-6, 16);
-        ctx.lineTo(0, 20);
-        ctx.lineTo(6, 16);
-        ctx.lineTo(6, 4);
-        ctx.lineTo(16, 8);
+        ctx.moveTo(0, -20);
+        ctx.lineTo(-14, 7);
+        ctx.lineTo(-5, 4);
+        ctx.lineTo(-5, 14);
+        ctx.lineTo(0, 18);
+        ctx.lineTo(5, 14);
+        ctx.lineTo(5, 4);
+        ctx.lineTo(14, 7);
         ctx.closePath();
         ctx.fill();
         
-        // Motion lines below ship
-        if (hyperspacePhase >= 1) {
-            ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.4 + (hyperspacePhase - 1) * 0.5) + ')';
-            ctx.lineWidth = 1.5;
-            for (let m = 0; m < 4; m++) {
-                const mx = -12 + m * 8;
-                const my = 24;
-                const mlen = 20 + hyperspacePhase * 30 + Math.random() * 10;
-                ctx.beginPath();
-                ctx.moveTo(mx, my);
-                ctx.lineTo(mx, my + mlen);
-                ctx.stroke();
-            }
+        // Engine thrust flames below ship (downward)
+        ctx.shadowBlur = 0;
+        const thrustAlpha = 0.5 + hyperspacePhase * 0.4;
+        for (let f = 0; f < 3; f++) {
+            const fx = -6 + f * 6;
+            const fy = 16;
+            const flameLen = 8 + hyperspacePhase * 28 + Math.sin(frameCount * 0.5 + f) * 8;
+            
+            // Outer flame (orange)
+            const flameGrad = ctx.createLinearGradient(fx, fy, fx, fy + flameLen);
+            flameGrad.addColorStop(0, 'rgba(255, 200, 50, ' + thrustAlpha + ')');
+            flameGrad.addColorStop(0.4, 'rgba(255, 120, 20, ' + (thrustAlpha * 0.7) + ')');
+            flameGrad.addColorStop(1, 'rgba(255, 40, 0, 0)');
+            ctx.fillStyle = flameGrad;
+            ctx.beginPath();
+            ctx.moveTo(fx - 3, fy);
+            ctx.lineTo(fx + 3, fy);
+            ctx.lineTo(fx + 1, fy + flameLen);
+            ctx.lineTo(fx - 1, fy + flameLen);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Inner core (white-yellow)
+            const innerGrad = ctx.createLinearGradient(fx, fy, fx, fy + flameLen * 0.6);
+            innerGrad.addColorStop(0, 'rgba(255, 255, 255, ' + (thrustAlpha * 0.8) + ')');
+            innerGrad.addColorStop(1, 'rgba(255, 200, 100, 0)');
+            ctx.fillStyle = innerGrad;
+            ctx.beginPath();
+            ctx.moveTo(fx - 1.5, fy + 2);
+            ctx.lineTo(fx + 1.5, fy + 2);
+            ctx.lineTo(fx, fy + flameLen * 0.55);
+            ctx.closePath();
+            ctx.fill();
         }
         
         ctx.restore();
     }
     
-    // Stage clear text (phase 0 and 1)
-    if (hyperspacePhase < 2 && hyperspaceTimer > 20) {
+    // === STAGE CLEAR TEXT ===
+    if (hyperspacePhase < 2 && hyperspaceTimer > 15) {
         const textAlpha = hyperspaceTimer > HYPERSPACE_TOTAL * 0.8 ? 
             (HYPERSPACE_TOTAL - hyperspaceTimer) / (HYPERSPACE_TOTAL * 0.2) : 
-            Math.min(1, hyperspaceTimer / 60);
+            Math.min(1, hyperspaceTimer / 50);
         
         ctx.save();
         ctx.globalAlpha = textAlpha;
-        ctx.font = 'bold 16px "Press Start 2P", monospace';
+        ctx.font = 'bold 14px "Press Start 2P", monospace';
         ctx.textAlign = 'center';
         ctx.fillStyle = '#FFD700';
         ctx.shadowColor = '#FFD700';
-        ctx.shadowBlur = 20;
-        ctx.fillText('STAGE ' + (currentStage) + ' CLEAR', GAME_WIDTH / 2, GAME_HEIGHT * 0.65);
+        ctx.shadowBlur = 18;
+        ctx.fillText('STAGE ' + (currentStage) + ' CLEAR', GAME_WIDTH / 2, GAME_HEIGHT * 0.72);
         ctx.shadowBlur = 0;
-        ctx.font = '10px "Press Start 2P", monospace';
+        ctx.font = '9px "Press Start 2P", monospace';
         ctx.fillStyle = '#88CCFF';
-        ctx.fillText('WARPING TO ' + PLANET_THEMES[(currentPlanetIndex + 1) % PLANET_THEMES.length].name, GAME_WIDTH / 2, GAME_HEIGHT * 0.65 + 30);
+        ctx.fillText('WARPING TO ' + PLANET_THEMES[(currentPlanetIndex + 1) % PLANET_THEMES.length].name, GAME_WIDTH / 2, GAME_HEIGHT * 0.72 + 28);
         ctx.textAlign = 'left';
         ctx.restore();
     }
