@@ -1518,8 +1518,9 @@ function update() {
     stageTimer++;
 
     // HYPERSPACE TRIGGER: Check BEFORE stageWave overflow resets bossDefeated
-    if (bossDefeated && bossSpawned && !hyperspaceActive && !deathActive) {
+    if (bossDefeated && !hyperspaceActive && !deathActive) {
         onBossDefeated();
+        return; // Skip rest of frame - hyperspace jump started
     }
     
     // Stage wave progression (70% of original time)
@@ -2939,12 +2940,12 @@ function drawLaserBeam() {
 // ============================================
 
 function onBossDefeated() {
-    // Guard: prevent re-entry during active hyperspace
-    if (hyperspaceActive) return;
-    
-    // Clear all enemies and bullets
+    // Clear all enemies and enemy bullets when final boss is destroyed
     enemies = [];
     enemyBullets = [];
+
+    // Guard: prevent re-entry during active hyperspace
+    if (hyperspaceActive) return;
     playerBullets = [];
     laserBeams = [];
     missiles = [];
