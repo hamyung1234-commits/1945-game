@@ -478,6 +478,19 @@ let bossActive = false;
 let bossDefeated = false;
 let bossWaveNumber = 0;
 let midBossStreak = 0;
+
+// === HYPERSPACE / STAGE SYSTEM ===
+let currentStage = 1;              // Current macro-stage (was "wave" conceptually)
+let stageWave = 1;                 // Sub-wave within current stage (1-10)
+let stageTimer = 0;                // Timer for sub-wave progression
+const STAGE_WAVES = 10;            // 10 sub-waves per stage
+const STAGE_WAVE_DURATION = 1260;  // 70% of original 1800 frames (21s)
+const HYPERSPACE_TOTAL = 240;      // 4 seconds at 60fps
+let hyperspaceActive = false;      // Hyperspace jump in progress
+let hyperspaceTimer = 0;           // Hyperspace duration counter
+let hyperspacePhase = 0;           // 0=rise, 1=streak, 2=arrive
+let currentPlanetIndex = 0;        // Which planet theme is displayed
+let hyperspaceStars = [];          // Star streak data for hyperspace effect
 let bossBaseHP = 0;
 let frameCount = 0;
 let bossClawCount = 1; // Number of claws (increases per boss)
@@ -593,6 +606,20 @@ const COLORS = {
     laser: '#FFFFFF',
     explosion: ['#FF6B35', '#F7931E', '#FFD700', '#FFFFFF']
 };
+
+// ============================================
+// PLANET THEMES - One planet per stage
+// ============================================
+const PLANET_THEMES = [
+    { name: 'KEPLER-7',  body: '#4A90D9', accent: '#2266CC', glow: '100,150,255', ring: 'rgba(180,210,255,0.55)', hasRing: true, hasMoon: false, moonColor: null, nebula: 'rgba(60,80,140,0.08)' },
+    { name: 'VULCAN-4',  body: '#CC4433', accent: '#882211', glow: '220,80,50',   ring: 'rgba(255,130,100,0.45)',  hasRing: false, hasMoon: true, moonColor: '#C0C0C0', nebula: 'rgba(140,40,20,0.07)' },
+    { name: 'NEXUS-9',   body: '#6B4A9E', accent: '#362280', glow: '140,100,200', ring: 'rgba(170,140,220,0.55)', hasRing: true, hasMoon: true, moonColor: '#DDA0DD', nebula: 'rgba(80,40,120,0.08)' },
+    { name: 'ZENITH-2',  body: '#3C8B5E', accent: '#1A5C30', glow: '80,180,120',  ring: 'rgba(120,200,160,0.5)',   hasRing: false, hasMoon: false, moonColor: null, nebula: 'rgba(30,80,50,0.07)' },
+    { name: 'ORION-5',   body: '#D9A04A', accent: '#B07020', glow: '255,180,80',  ring: 'rgba(255,200,120,0.55)',  hasRing: true, hasMoon: false, moonColor: null, nebula: 'rgba(120,80,20,0.07)' },
+    { name: 'CRYON-8',   body: '#55AACC', accent: '#337788', glow: '80,190,220',  ring: 'rgba(150,220,240,0.5)',   hasRing: true, hasMoon: true, moonColor: '#E8E8FF', nebula: 'rgba(40,100,140,0.08)' },
+    { name: 'EMBER-3',   body: '#EE6622', accent: '#BB4400', glow: '250,120,50',  ring: 'rgba(255,160,80,0.45)',   hasRing: false, hasMoon: false, moonColor: null, nebula: 'rgba(140,60,10,0.07)' },
+    { name: 'VOID-6',    body: '#334466', accent: '#1A2A40', glow: '60,80,140',   ring: 'rgba(80,100,180,0.4)',    hasRing: true, hasMoon: true, moonColor: '#999999', nebula: 'rgba(20,30,60,0.09)' },
+];
 
 // ============================================
 // INPUT HANDLING
@@ -867,10 +894,18 @@ if (isTouchDevice()) { setupMobileControls(); }
 function startGame() {
     gameState = GameState.PLAYING;
     score = 0;
-    wave = 1;
-    generatePlanetSet();
+    currentStage = 1;
+    stageWave = 1;
+    stageTimer = 0;
+    wave = 1;  // keep wave for compatibility with existing code that reads it
+    currentPlanetIndex = 0;
+    generatePlanetSet(currentPlanetIndex);
     waveTimer = 0;
     frameCount = 0;
+    hyperspaceActive = false;
+    hyperspaceTimer = 0;
+    hyperspacePhase = 0;
+    hyperspaceStars = [];
     
     player.x = GAME_WIDTH / 2;
     player.y = GAME_HEIGHT - 80;
@@ -942,28 +977,6 @@ function startGame() {
     mUltimateMissile = null;
     
     startBGM();
-    // Initialize background planets for the run
-    planets = [];
-    const planetColors = [
-        { body: '#8B7355', ring: '#C4A882', glow: '#A0522D' },  // Ringed gas giant
-        { body: '#4A7A9B', ring: '#87CEEB', glow: '#2E5F8A' },  // Blue ice planet  
-        { body: '#8B4513', ring: '#FF6347', glow: '#CD5C5C' },  // Red volcanic
-        { body: '#556B2F', ring: '#90EE90', glow: '#3B5323' },  // Green forest
-        { body: '#9370DB', ring: '#DDA0DD', glow: '#6A0DAD' },  // Purple mystic
-    ];
-    for (let p = 0; p < 6; p++) {
-        planets.push({
-            x: Math.random() * GAME_WIDTH,
-            y: Math.random() * GAME_HEIGHT,
-            radius: 15 + Math.random() * 35,
-            speed: 0.3 + Math.random() * 0.8,
-            distance: Math.random(), // 0=far, 1=near
-            color: planetColors[p % planetColors.length],
-            craters: Math.floor(Math.random() * 4),
-            phase: Math.random() * Math.PI * 2,
-            waveType: Math.floor(Math.random() * 3) // planet visual type
-        });
-    }
 }
 
 function useBomb() {
@@ -1077,7 +1090,8 @@ function playerShoot() {
 function spawnEnemy() {
     // Boss wave check: at wave 9,19,29... (appears before next 10th wave)
     // Force new boss spawn - remove any old boss that's still alive
-    if (wave % 10 === 9 && bossWaveNumber < wave) {
+    // Boss appears at sub-wave 10 of each stage
+    if (stageWave === 10 && bossWaveNumber < currentStage) {
         // Remove any previous wave boss that's still alive (prevents spawn blocking)
         if (bossActive) {
             for (let ei = enemies.length - 1; ei >= 0; ei--) {
@@ -1089,11 +1103,11 @@ function spawnEnemy() {
         }
         bossActive = true;
         bossDefeated = false;
-        bossWaveNumber = wave;
+        bossWaveNumber = currentStage;
         
         // Boss HP: first boss = mid-boss * 3 (20+10*5=70, so 210)
         // Each subsequent boss +30% from previous boss
-        const bossNumber = Math.floor(wave / 10); // 1st boss at wave 10, 2nd at 20...
+        const bossNumber = currentStage; // Boss number = current stage
         const baseMidBossHP = 20 + 10 * 5; // mid-boss HP at wave 10 = 70
         let bossHP = baseMidBossHP * 3; // 210 for first boss
         for (let b = 1; b < bossNumber; b++) {
@@ -1102,7 +1116,7 @@ function spawnEnemy() {
         bossBaseHP = bossHP;
         
         // Each boss appearance adds one more claw (first boss = 1 claw)
-        bossClawCount = bossNumber + 1;
+        bossClawCount = currentStage + 1;
         bossClaws = [];
         
         const bossEnemy = {
@@ -1114,7 +1128,7 @@ function spawnEnemy() {
             hp: bossHP,
             maxHp: bossHP,
             speed: ENEMY_BASE_SPEED * 0.25,
-            score: 5000 + wave * 500,
+            score: 5000 + currentStage * 5000,
             shootCooldown: 15,
             angle: 0,
             phase: Math.random() * Math.PI * 2,
@@ -1123,7 +1137,7 @@ function spawnEnemy() {
         enemies.push(bossEnemy);
         
         // Show boss warning flash
-        waveFlash = { active: true, timer: 120, text: 'BOSS WAVE ' + wave };
+        waveFlash = { active: true, timer: 120, text: 'STAGE ' + currentStage + ' BOSS' };
         return;
     }
     
@@ -1134,7 +1148,7 @@ function spawnEnemy() {
     if (wave >= 3) { types.push('fighter', 'bomber', 'rammer'); }
     if (wave >= 5 && wave % 10 !== 0) types.push('boss');
     // At wave 15+, reduce small enemy types by 50% (prevent overwhelming spawns)
-    if (wave >= 15 && wave % 10 !== 9 && wave % 10 !== 0) {
+    if (currentStage >= 2 && stageWave !== 10) {
         // Keep only half the small enemy entries for better balance
         types = ['scout', 'fighter', 'bomber'];
         // 70% heart boss, 30% octopus - mutually exclusive per spawn cycle
@@ -1477,16 +1491,27 @@ function update() {
 
     
     // frameCount already incremented in gameLoop
-    waveTimer++;
+    // stageTimer is incremented above
     
-    // Wave progression - instant transition with flash (always runs)
-    if (waveTimer > 1800) {
-        wave++;
-        waveTimer = 0;
+    // Stage/Sub-wave progression - hyperspace check FIRST
+    if (hyperspaceActive) {
+        updateHyperspace();
+        return; // Skip all gameplay updates during hyperspace
+    }
+    
+    stageTimer++;
+    
+    // Stage wave progression (70% of original time)
+    if (stageTimer > STAGE_WAVE_DURATION) {
+        stageWave++;
+        stageTimer = 0;
         bossDefeated = false;
+        wave = currentStage * 10 + stageWave; // keep legacy wave roughly in sync
         // Show wave number flash
-        waveFlash = { active: true, timer: 90, text: 'WAVE ' + wave };
-        generatePlanetSet();
+        const displayWave = (currentStage - 1) * 10 + stageWave;
+        waveFlash = { active: true, timer: 90, text: 'STAGE ' + currentStage + '  WAVE ' + stageWave };
+        // Use planet set but don't regenerate (planet is tied to stage)
+        generatePlanetSet(currentPlanetIndex);
         // Rapid enemy respawn after wave increase
         spawnBoost = 60;
     }
@@ -1501,12 +1526,17 @@ function update() {
         }
         spawnBoost--;
     } else {
-        const spawnRate = Math.max(12, 80 - wave * 4);
+        const spawnRate = Math.max(12, 75 - currentStage * 6 - stageWave);
         if (frameCount % spawnRate === 0) {
             spawnEnemy();
             lastSpawnFrame = frameCount;
             noSpawnCounter = 0;
         }
+    }
+    
+    // HYPERSPACE TRIGGER: If boss was just defeated, start hyperspace
+    if (bossDefeated && !hyperspaceActive && !deathActive) {
+        onBossDefeated();
     }
     
     // SAFETY NET: If no enemies for too long, force spawn
@@ -2882,32 +2912,384 @@ function drawLaserBeam() {
 }
 
 // Generate planet set based on current wave
-function generatePlanetSet() {
+// ============================================
+// HYPERSPACE SYSTEM
+// ============================================
+
+function onBossDefeated() {
+    // Clear all enemies and bullets
+    enemies = [];
+    enemyBullets = [];
+    playerBullets = [];
+    laserBeams = [];
+    missiles = [];
+    droneBullets = [];
+    bossClaws = [];
+    octopusTentacles = [];
+    bossActive = false;
+    bossDefeated = true;
+    
+    // Start hyperspace jump
+    hyperspaceActive = true;
+    hyperspaceTimer = HYPERSPACE_TOTAL;
+    hyperspacePhase = 0;
+    player.invincible = true;
+    
+    // Generate hyperspace star data
+    hyperspaceStars = [];
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT * 0.3;
+    for (let i = 0; i < 200; i++) {
+        hyperspaceStars.push({
+            x: Math.random() * GAME_WIDTH,
+            y: Math.random() * GAME_HEIGHT,
+            size: Math.random() * 3 + 0.5,
+            baseX: Math.random() * GAME_WIDTH,
+            baseY: Math.random() * GAME_HEIGHT,
+            angle: Math.atan2(cy - (Math.random() * GAME_HEIGHT), cx - (Math.random() * GAME_WIDTH)),
+            speed: Math.random() * 3 + 1,
+            trailLength: 0,
+            hue: Math.random() < 0.8 ? 210 : 30  // mostly blue, some warm
+        });
+    }
+    
+    // Big explosion at boss location
+    screenShake = 30;
+    screenShakeIntensity = 12;
+}
+
+function updateHyperspace() {
+    hyperspaceTimer--;
+    
+    if (hyperspaceTimer > HYPERSPACE_TOTAL * 0.75) {
+        // Phase 0: Player flies upward (1s)
+        hyperspacePhase = 0;
+        player.y -= 3.5;
+        if (player.y < -50) player.y = -50;
+    } else if (hyperspaceTimer > HYPERSPACE_TOTAL * 0.2) {
+        // Phase 1: Star streak acceleration (2.2s)
+        hyperspacePhase = 1;
+        if (player.y < -50) player.y = -60;
+    } else {
+        // Phase 2: Deceleration/arrival (0.8s)
+        hyperspacePhase = 2;
+        player.y += 2.5;
+    }
+    
+    // Update hyperspace stars
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT * 0.3;
+    for (let i = hyperspaceStars.length - 1; i >= 0; i--) {
+        const s = hyperspaceStars[i];
+        s.x += Math.cos(s.angle) * s.speed * (1 + hyperspacePhase * 2);
+        s.y += Math.sin(s.angle) * s.speed * (1 + hyperspacePhase * 2);
+        
+        // Trail length increases with phase
+        s.trailLength = hyperspacePhase * s.speed * 35;
+        
+        // Reset star if it goes off screen
+        if (s.x < -100 || s.x > GAME_WIDTH + 100 || s.y < -100 || s.y > GAME_HEIGHT + 100) {
+            s.x = s.baseX;
+            s.y = s.baseY;
+            s.trailLength = 0;
+        }
+    }
+    
+    // Transition back to gameplay when timer expires
+    if (hyperspaceTimer <= 0) {
+        hyperspaceActive = false;
+        hyperspacePhase = 0;
+        hyperspaceStars = [];
+        
+        // Advance to next stage
+        currentStage++;
+        stageWave = 1;
+        stageTimer = 0;
+        wave = currentStage * 10 + 1;
+        bossDefeated = false;
+        bossActive = false;
+        bossClawCount = currentStage + 1;
+        
+        // Next planet theme
+        currentPlanetIndex = (currentPlanetIndex + 1) % PLANET_THEMES.length;
+        generatePlanetSet(currentPlanetIndex);
+        
+        // Reset player position and state
+        player.y = GAME_HEIGHT - 80;
+        player.invincible = false;
+        player.invincibleTimer = 60; // brief invincibility after jump
+        
+        // Show new stage flash
+        waveFlash = { active: true, timer: 120, text: 'STAGE ' + currentStage };
+        
+        // Replenish 1 bomb per stage clear (up to max 5)
+        player.bombs = Math.min(5, player.bombs + 1);
+        
+        // Heal 1 HP on stage clear (up to max 5)
+        player.lives = Math.min(5, player.lives + 1);
+        
+        // Rapid spawn after hyperspace
+        spawnBoost = 90;
+    }
+}
+
+function drawHyperspace() {
+    ctx.save();
+    
+    // Pure black background
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT * 0.3;
+    const progress = 1 - (hyperspaceTimer / HYPERSPACE_TOTAL);
+    
+    // Draw star streaks
+    for (let i = hyperspaceStars.length - 1; i >= 0; i--) {
+        const s = hyperspaceStars[i];
+        if (s.trailLength < 1) continue;
+        
+        const length = s.trailLength;
+        const endX = s.x - Math.cos(s.angle) * length;
+        const endY = s.y - Math.sin(s.angle) * length;
+        
+        // Trail gradient from bright to transparent
+        const alpha = Math.min(1, length / 100);
+        const hue = s.hue + hyperspacePhase * 15;
+        ctx.strokeStyle = 'hsla(' + hue + ', 80%, ' + (60 + hyperspacePhase * 30) + '%, ' + alpha + ')';
+        ctx.lineWidth = s.size * (1 + hyperspacePhase * 0.5);
+        ctx.shadowColor = 'hsla(' + hue + ', 100%, 70%, ' + (alpha * 0.8) + ')';
+        ctx.shadowBlur = s.size * (2 + hyperspacePhase * 4);
+        
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        
+        // Bright point at head
+        ctx.shadowBlur = s.size * 6;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+    
+    // Central light tunnel effect (phase 1+)
+    if (hyperspacePhase >= 1) {
+        const tunnelAlpha = (hyperspacePhase - 1) * 0.4 + progress * 0.3;
+        const tunnelGrad = ctx.createRadialGradient(cx, cy, 10, cx, cy, GAME_HEIGHT);
+        tunnelGrad.addColorStop(0, 'rgba(180, 220, 255, ' + (tunnelAlpha * 0.6) + ')');
+        tunnelGrad.addColorStop(0.3, 'rgba(100, 160, 255, ' + (tunnelAlpha * 0.3) + ')');
+        tunnelGrad.addColorStop(0.6, 'rgba(40, 80, 180, ' + (tunnelAlpha * 0.1) + ')');
+        tunnelGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = tunnelGrad;
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+    
+    // Draw the player ship being pulled up
+    if (player.y > -80) {
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        
+        // Ship glow
+        const shipGlow = ctx.createRadialGradient(0, 0, 8, 0, 0, 40 + hyperspacePhase * 20);
+        shipGlow.addColorStop(0, 'rgba(255, 255, 255, ' + (0.6 + hyperspacePhase * 0.3) + ')');
+        shipGlow.addColorStop(0.5, 'rgba(100, 180, 255, ' + (0.3 + hyperspacePhase * 0.2) + ')');
+        shipGlow.addColorStop(1, 'rgba(0, 50, 150, 0)');
+        ctx.fillStyle = shipGlow;
+        ctx.beginPath();
+        ctx.arc(0, 0, 40 + hyperspacePhase * 20, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Simple ship silhouette
+        ctx.fillStyle = '#FFFFFF';
+        ctx.shadowColor = 'rgba(200, 230, 255, 0.9)';
+        ctx.shadowBlur = 15;
+        ctx.beginPath();
+        ctx.moveTo(0, -22);
+        ctx.lineTo(-16, 8);
+        ctx.lineTo(-6, 4);
+        ctx.lineTo(-6, 16);
+        ctx.lineTo(0, 20);
+        ctx.lineTo(6, 16);
+        ctx.lineTo(6, 4);
+        ctx.lineTo(16, 8);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Motion lines below ship
+        if (hyperspacePhase >= 1) {
+            ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.4 + (hyperspacePhase - 1) * 0.5) + ')';
+            ctx.lineWidth = 1.5;
+            for (let m = 0; m < 4; m++) {
+                const mx = -12 + m * 8;
+                const my = 24;
+                const mlen = 20 + hyperspacePhase * 30 + Math.random() * 10;
+                ctx.beginPath();
+                ctx.moveTo(mx, my);
+                ctx.lineTo(mx, my + mlen);
+                ctx.stroke();
+            }
+        }
+        
+        ctx.restore();
+    }
+    
+    // Stage clear text (phase 0 and 1)
+    if (hyperspacePhase < 2 && hyperspaceTimer > 20) {
+        const textAlpha = hyperspaceTimer > HYPERSPACE_TOTAL * 0.8 ? 
+            (HYPERSPACE_TOTAL - hyperspaceTimer) / (HYPERSPACE_TOTAL * 0.2) : 
+            Math.min(1, hyperspaceTimer / 60);
+        
+        ctx.save();
+        ctx.globalAlpha = textAlpha;
+        ctx.font = 'bold 16px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#FFD700';
+        ctx.shadowColor = '#FFD700';
+        ctx.shadowBlur = 20;
+        ctx.fillText('STAGE ' + (currentStage) + ' CLEAR', GAME_WIDTH / 2, GAME_HEIGHT * 0.65);
+        ctx.shadowBlur = 0;
+        ctx.font = '10px "Press Start 2P", monospace';
+        ctx.fillStyle = '#88CCFF';
+        ctx.fillText('WARPING TO ' + PLANET_THEMES[(currentPlanetIndex + 1) % PLANET_THEMES.length].name, GAME_WIDTH / 2, GAME_HEIGHT * 0.65 + 30);
+        ctx.textAlign = 'left';
+        ctx.restore();
+    }
+    
+    ctx.restore();
+}
+
+function generatePlanetSet(planetIndex) {
     planets = [];
-    const planetCount = 3 + Math.floor(wave / 2);
-    for (let p = 0; p < planetCount; p++) {
-        const waveType = Math.floor(Math.random() * 3);
-        const colorSets = [
-            { body: '#4A90D9', glow: '100, 150, 255', ring: 'rgba(180, 210, 255, 0.5)' },  // Blue ice planet
-            { body: '#D94A4A', glow: '255, 100, 80', ring: 'rgba(255, 150, 130, 0.5)' },    // Red volcanic
-            { body: '#8B5E3C', glow: '180, 140, 100', ring: 'rgba(200, 160, 120, 0.5)' },   // Brown desert
-            { body: '#6B4A9E', glow: '140, 100, 200', ring: 'rgba(170, 140, 220, 0.5)' },   // Purple gas
-            { body: '#3C8B5E', glow: '80, 180, 120', ring: 'rgba(120, 200, 160, 0.5)' },    // Green forest
-            { body: '#D9A04A', glow: '255, 180, 80', ring: 'rgba(255, 200, 120, 0.5)' },    // Orange lava
-        ];
+    const theme = PLANET_THEMES[planetIndex % PLANET_THEMES.length];
+    // Main planet - large, prominent
+    planets.push({
+        x: GAME_WIDTH / 2,
+        y: GAME_HEIGHT * 0.72,
+        radius: 180 + Math.random() * 40,
+        speed: 0,
+        distance: 0.1,
+        isMainPlanet: true,
+        themeIndex: planetIndex % PLANET_THEMES.length,
+        craters: 5 + Math.floor(Math.random() * 5),
+        phase: Math.random() * Math.PI * 2,
+        waveType: 0
+    });
+    // Small background moons/planets
+    for (let p = 0; p < 4; p++) {
         planets.push({
             x: Math.random() * GAME_WIDTH,
-            y: Math.random() * GAME_HEIGHT * 0.6 - 80,
-            radius: 15 + Math.random() * 35,
-            speed: 0.3 + Math.random() * 0.8,
-            distance: Math.random(),
-            waveType: waveType,
-            color: colorSets[Math.floor(Math.random() * colorSets.length)],
-            craters: 2 + Math.floor(Math.random() * 4),
-            phase: Math.random() * Math.PI * 2
+            y: Math.random() * GAME_HEIGHT * 0.55,
+            radius: 10 + Math.random() * 25,
+            speed: 0.15 + Math.random() * 0.3,
+            distance: 0.3 + Math.random() * 0.4,
+            isMainPlanet: false,
+            themeIndex: Math.floor(Math.random() * PLANET_THEMES.length),
+            craters: 1 + Math.floor(Math.random() * 3),
+            phase: Math.random() * Math.PI * 2,
+            waveType: Math.floor(Math.random() * 3)
         });
     }
 }
+function drawMainPlanet(planet) {
+    const theme = PLANET_THEMES[planet.themeIndex];
+    const px = planet.x;
+    const py = planet.y;
+    const pr = planet.radius;
+    const distanceAlpha = 1;
+    
+    ctx.save();
+    
+    // Atmospheric glow
+    const atmoGrad = ctx.createRadialGradient(px, py - pr * 0.4, pr * 0.2, px, py, pr * 1.6);
+    atmoGrad.addColorStop(0, 'rgba(' + theme.glow + ', 0.5)');
+    atmoGrad.addColorStop(0.4, 'rgba(' + theme.glow + ', 0.2)');
+    atmoGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = atmoGrad;
+    ctx.beginPath();
+    ctx.arc(px, py, pr * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Planet body with gradient
+    const bodyGrad = ctx.createRadialGradient(px - pr * 0.15, py - pr * 0.35, pr * 0.05, px, py, pr * 1.05);
+    bodyGrad.addColorStop(0, lightenHex(theme.body, 35));
+    bodyGrad.addColorStop(0.3, theme.body);
+    bodyGrad.addColorStop(0.7, theme.accent);
+    bodyGrad.addColorStop(1, darkenHex(theme.accent, 45));
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.arc(px, py, pr, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Surface details
+    for (let c = 0; c < planet.craters; c++) {
+        const cx = px + (Math.sin(planet.phase + c * 1.7) * pr * 0.55);
+        const cy = py - pr * 0.25 + (Math.cos(planet.phase + c * 2.1) * pr * 0.28);
+        const cr = pr * 0.04 + c * pr * 0.015;
+        if (cy < GAME_HEIGHT + pr) {
+            ctx.fillStyle = darkenHex(theme.body, 25);
+            ctx.beginPath();
+            ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = lightenHex(theme.body, 12);
+            ctx.beginPath();
+            ctx.arc(cx - cr * 0.3, cy - cr * 0.3, cr * 0.4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    
+    // Surface bands/lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = pr * 0.06;
+    for (let b = 0; b < 3; b++) {
+        const by = py - pr * 0.2 + b * pr * 0.2;
+        if (by < GAME_HEIGHT + 50) {
+            ctx.beginPath();
+            ctx.arc(px, by, pr * 0.85 + b * pr * 0.03, 0, Math.PI);
+            ctx.stroke();
+        }
+    }
+    
+    // Ring
+    if (theme.hasRing) {
+        const ringY = py - pr * 0.6;
+        ctx.strokeStyle = theme.ring;
+        ctx.lineWidth = pr * 0.045;
+        ctx.globalAlpha = 0.55;
+        ctx.beginPath();
+        ctx.ellipse(px, ringY, pr * 1.35, pr * 0.18, -0.22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.lineWidth = pr * 0.02;
+        ctx.strokeStyle = theme.ring.replace(/0\.\d+/, '0.8');
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath();
+        ctx.ellipse(px, ringY, pr * 1.35, pr * 0.18, -0.22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+    
+    // Moon
+    if (theme.hasMoon) {
+        const moonX = px + pr * 1.2 + Math.sin(frameCount * 0.005) * pr * 0.1;
+        const moonY = py - pr * 0.5;
+        const moonR = pr * 0.11;
+        const moonGrad = ctx.createRadialGradient(moonX - moonR * 0.3, moonY - moonR * 0.3, moonR * 0.1, moonX, moonY, moonR);
+        moonGrad.addColorStop(0, '#FFFFFF');
+        moonGrad.addColorStop(0.4, theme.moonColor || '#CCCCCC');
+        moonGrad.addColorStop(1, darkenHex(theme.moonColor || '#888888', 50));
+        ctx.fillStyle = moonGrad;
+        ctx.beginPath();
+        ctx.arc(moonX, moonY, moonR, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    
+    ctx.restore();
+}
+
 function drawBackground() {
     // Deep space gradient
     const gradient = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
@@ -2927,10 +3309,23 @@ function drawBackground() {
         bossHPBarAlpha = Math.max(0, bossHPBarAlpha - 0.03);
     }
 
-    // === PLANETS ===
-    // Show different planets based on wave progression
-    const maxPlanets = Math.min(planets.length, 2 + Math.floor(wave / 3));
-    for (let pi = 0; pi < maxPlanets; pi++) {
+    // === NEBULA for current planet ===
+    if (planets.length > 0 && planets[0].isMainPlanet) {
+        const theme = PLANET_THEMES[planets[0].themeIndex];
+        const nebulaGrad = ctx.createRadialGradient(GAME_WIDTH / 2, GAME_HEIGHT * 0.6, 30, GAME_WIDTH / 2, GAME_HEIGHT * 0.6, GAME_HEIGHT);
+        nebulaGrad.addColorStop(0, theme.nebula);
+        nebulaGrad.addColorStop(0.5, theme.nebula.replace('0.0', '0.03'));
+        nebulaGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = nebulaGrad;
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        // Draw main planet (large, at bottom of screen)
+        if (planets.length > 0 && planets[0].isMainPlanet) {
+            drawMainPlanet(planets[0]);
+        }
+    }
+
+    // === BACKGROUND PLANETS (small) ===
+    for (let pi = 1; pi < planets.length; pi++) {
         const planet = planets[pi];
         // Update planet position
         planet.y += planet.speed;
@@ -2942,30 +3337,32 @@ function drawBackground() {
             planet.speed = 0.3 + Math.random() * 0.8;
             planet.distance = Math.random();
             planet.waveType = Math.floor(Math.random() * 3);
+            planet.themeIndex = Math.floor(Math.random() * PLANET_THEMES.length);
         }
 
         // Distance-based rendering
-        const distanceAlpha = 1 - planet.distance * 0.6; // far = more transparent
-        const distanceScale = 1 - planet.distance * 0.4; // far = smaller
+        const distanceAlpha = 1 - planet.distance * 0.6;
+        const distanceScale = 1 - planet.distance * 0.4;
         const r = planet.radius * distanceScale;
         const px = planet.x;
         const py = planet.y;
+        const theme = PLANET_THEMES[planet.themeIndex];
 
         ctx.save();
         ctx.globalAlpha = distanceAlpha;
 
         // Atmospheric glow
         const glowGrad = ctx.createRadialGradient(px, py, r * 0.8, px, py, r * 1.8);
-        glowGrad.addColorStop(0, 'rgba(' + hexToRgb(planet.color.glow) + ', 0.35)');
-        glowGrad.addColorStop(1, 'rgba(' + hexToRgb(planet.color.glow) + ', 0)');
+        glowGrad.addColorStop(0, 'rgba(' + theme.glow + ', 0.35)');
+        glowGrad.addColorStop(1, 'rgba(' + theme.glow + ', 0)');
         ctx.fillStyle = glowGrad;
         ctx.beginPath();
         ctx.arc(px, py, r * 1.8, 0, Math.PI * 2);
         ctx.fill();
 
-        // Planet body (with surface details based on waveType)
+        // Planet body
         const bodyGrad = ctx.createRadialGradient(px - r * 0.25, py - r * 0.25, r * 0.1, px, py, r);
-        const bc = planet.color.body;
+        const bc = theme.body;
         bodyGrad.addColorStop(0, lightenHex(bc, 40));
         bodyGrad.addColorStop(0.6, bc);
         bodyGrad.addColorStop(1, darkenHex(bc, 50));
@@ -2989,9 +3386,9 @@ function drawBackground() {
             ctx.fill();
         }
 
-        // Ring for ringed planets (wave 1-3 type)
-        if (planet.waveType === 0) {
-            ctx.strokeStyle = planet.color.ring;
+        // Ring
+        if (theme.hasRing) {
+            ctx.strokeStyle = theme.ring;
             ctx.lineWidth = r * 0.06;
             ctx.globalAlpha = distanceAlpha * 0.5;
             ctx.beginPath();
@@ -3004,31 +3401,22 @@ function drawBackground() {
             ctx.stroke();
         }
 
-        // Cloud bands (wave 4-6 type)
-        if (planet.waveType === 1) {
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-            ctx.lineWidth = r * 0.04;
-            for (let b = -2; b <= 2; b++) {
-                ctx.beginPath();
-                ctx.ellipse(px + b * r * 0.1, py + b * r * 0.3, r * 0.8, r * 0.15, 0.1, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-        }
-
-        // Volcanic spots (wave 7+ type)
-        if (planet.waveType === 2) {
-            for (let v = 0; v < 3; v++) {
-                const vx = px + Math.cos(planet.phase * 0.5 + v * 2.1) * r * 0.45;
-                const vy = py + Math.sin(planet.phase * 0.5 + v * 2.1) * r * 0.35;
-                ctx.fillStyle = 'rgba(255, 100, 30, 0.5)';
-                ctx.beginPath();
-                ctx.arc(vx, vy, r * 0.1, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = 'rgba(255, 200, 80, 0.35)';
-                ctx.beginPath();
-                ctx.arc(vx, vy, r * 0.05, 0, Math.PI * 2);
-                ctx.fill();
-            }
+        // Moon
+        if (theme.hasMoon) {
+            const moonAngle = planet.phase * 0.8;
+            const moonDist = r * 1.35;
+            const moonX = px + Math.cos(moonAngle) * moonDist;
+            const moonY = py + Math.sin(moonAngle) * moonDist * 0.5;
+            const moonR = r * 0.18;
+            ctx.fillStyle = theme.moonColor;
+            ctx.beginPath();
+            ctx.arc(moonX, moonY, moonR, 0, Math.PI * 2);
+            ctx.fill();
+            // Moon crater
+            ctx.fillStyle = darkenHex(theme.moonColor, 30);
+            ctx.beginPath();
+            ctx.arc(moonX + moonR * 0.3, moonY - moonR * 0.2, moonR * 0.3, 0, Math.PI * 2);
+            ctx.fill();
         }
 
         ctx.restore();
@@ -4576,7 +4964,7 @@ function drawPlayer() {
         // Wave
         ctx.textAlign = 'center';
         ctx.font = '10px "Press Start 2P", monospace';
-        ctx.fillText(`WAVE ${wave}`, GAME_WIDTH / 2, 30);
+        ctx.fillText('STAGE ' + currentStage + ' W' + stageWave, GAME_WIDTH / 2, 30);
         
         // V Power - very faint, small pulsing countdown number
         if (player.vPowerActive) {
@@ -4831,6 +5219,14 @@ function drawPlayer() {
             if (isTouchDevice()) { try { drawJoystick(); } catch(e) {} }
 
         } else if (gameState === GameState.PLAYING) {
+            // === HYPERSPACE CHECK: Special rendering during jump ===
+            if (hyperspaceActive) {
+                try { drawHyperspace(); } catch(e) { console.error('drawHyperspace:', e.message); }
+                try { drawUI(); } catch(e) { console.error('drawUI:', e.message); }
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+            
             // === PLAYING RENDER: Single save/restore around entire block ===
             ctx.save();
 
