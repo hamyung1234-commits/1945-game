@@ -662,6 +662,7 @@ function setupMobileControls() {
     canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
     canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: false });
     canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: false });
+    canvas.addEventListener('click', handleCanvasClick);
     
     // Bomb button only (fire button removed - auto-fire on touch devices)
     if (bombBtn) {
@@ -832,6 +833,20 @@ function handleCanvasTouchEnd(e) {
     }
 }
 
+// Click handler for title/gameover screen (touch + mouse fallback)
+function handleCanvasClick(e) {
+    if (gameState === GameState.TITLE) {
+        initAudio();
+        startGame();
+        return;
+    }
+    if (gameState === GameState.GAMEOVER) {
+        initAudio();
+        startGame();
+        return;
+    }
+}
+
 function updateTouchTarget(touch) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = GAME_WIDTH / rect.width;
@@ -843,6 +858,7 @@ function updateTouchTarget(touch) {
 
 // Initialize mobile controls after DOM is ready
 // Initialize mobile controls - handle both async and sync loading
+if (isTouchDevice()) { setupMobileControls(); }
 
 // ============================================
 // GAME FUNCTIONS
