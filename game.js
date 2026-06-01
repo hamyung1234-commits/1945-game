@@ -1257,8 +1257,8 @@ function spawnEnemy() {
             enemy.shootCooldown = 20;
             break;
         case 'rammer':
-            enemy.hp = 2 + Math.floor(currentStage * 0.8);
-            // HP scales: Stage1=2, Stage2=3, Stage3=4, Stage5=6, Stage10=10
+            enemy.hp = 1 + Math.floor(currentStage * 0.7);
+            // HP scales: Stage1=1, Stage2=2, Stage3=3, Stage5=4, Stage10=8
             enemy.maxHp = enemy.hp;
             enemy.speed = ENEMY_BASE_SPEED * 0.864;
             enemy.score = 400;
@@ -1698,7 +1698,7 @@ function update() {
                                 spawnPowerup(e.x, e.y, true);
                                 bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                                if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                                bossDefeated = true;
                                 bossClaws = [];
                                 player.lives = Math.min(5, player.lives + 1);
                             } else {
@@ -1899,7 +1899,7 @@ function update() {
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                            if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                            bossDefeated = true;
                             player.lives = Math.min(5, player.lives + 1);
                             bossClaws = [];
                         } else {
@@ -2065,7 +2065,7 @@ function update() {
             if (enemy.isWaveBoss) {
                 bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                bossDefeated = true;
                 bossClaws = [];
             }
             enemies.splice(ei, 1);
@@ -2237,7 +2237,7 @@ function update() {
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                        if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                        bossDefeated = true;
                         player.lives = Math.min(5, player.lives + 1);
                         bossClaws = [];
                     } else {
@@ -2294,7 +2294,7 @@ function update() {
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                            if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                            bossDefeated = true;
                             bossClaws = [];
                             player.lives = Math.min(5, player.lives + 1);
                         } else {
@@ -2422,7 +2422,7 @@ function update() {
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                            if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                            bossDefeated = true;
                             bossClaws = [];
                             player.lives = Math.min(5, player.lives + 1);
                         } else {
@@ -2569,7 +2569,7 @@ function update() {
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                        if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                        bossDefeated = true;
                         bossClaws = [];
                         player.lives = Math.min(5, player.lives + 1);
                     } else {
@@ -2609,7 +2609,7 @@ function update() {
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                        if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                        bossDefeated = true;
                         bossClaws = [];
                         player.lives = Math.min(5, player.lives + 1);
                     } else {
@@ -2654,7 +2654,7 @@ function update() {
                 if (enemy.isWaveBoss) {
                     bossActive = false;
                             screenShake = Math.max(screenShake, 20); screenShakeIntensity = 8;
-                    if (!enemy.isMidBoss) { bossDefeated = true; onBossDefeated(); }
+                    bossDefeated = true;
                     bossClaws = [];
                 }
                 enemies.splice(ei, 1);
@@ -2938,6 +2938,9 @@ function drawLaserBeam() {
 // ============================================
 
 function onBossDefeated() {
+    // Guard: prevent re-entry during active hyperspace
+    if (hyperspaceActive) return;
+    
     // Clear all enemies and bullets
     enemies = [];
     enemyBullets = [];
