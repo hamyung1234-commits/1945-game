@@ -1158,22 +1158,16 @@ function spawnEnemy() {
     // Spawn enemies slightly slower during boss fight (7/8 pass rate)
     if (bossActive && frameCount % 8 === 0) return;
     
-    let types = ['scout', 'scout', 'fighter', 'bomber', 'rammer'];
+    let types = ['scout', 'scout', 'scout', 'fighter', 'fighter', 'bomber', 'rammer'];
     if (wave >= 3) { types.push('fighter', 'bomber', 'rammer'); }
-    if (wave >= 5 && wave % 10 !== 0) types.push('boss');
+    if (wave >= 17 && wave % 10 !== 0) types.push('boss');
     // At wave 15+, reduce small enemy types by 50% (prevent overwhelming spawns)
     if (currentStage >= 2 && stageWave !== STAGE_WAVES) {
-        // Keep only half the small enemy entries for better balance
+        // Keep small enemy types for balance
         types = ['scout', 'fighter', 'bomber'];
-        // 70% heart boss, 30% octopus - mutually exclusive per spawn cycle
-        if (Math.random() < 0.3) {
-            types.push('octopus');
-            // Remove heart bosses when octopus is chosen
-            for (let ti = types.length - 1; ti >= 0; ti--) {
-                if (types[ti] === 'boss') types.splice(ti, 1);
-            }
-        }
-        // 70% chance: heart boss stays (already added above)
+        // Both octopus AND heart mid-boss spawn together (not mutually exclusive)
+        types.push('octopus');
+        // Heart boss already added above via wave condition
     }
     
     let type = types[Math.floor(Math.random() * types.length)];
@@ -1217,7 +1211,7 @@ function spawnEnemy() {
             break;
         case 'octopus':
             // Alien octopus mid-boss (from wave 15) - stays at top, attacks with tentacles
-            enemy.hp = Math.floor((20 + wave * 5) * 0.5);
+            enemy.hp = Math.floor((8 + wave * 2) * 0.7); // Scaled with new mid-boss HP
             enemy.maxHp = enemy.hp;
             enemy.speed = 0;
             enemy.score = 700;
@@ -1225,7 +1219,7 @@ function spawnEnemy() {
             enemy.height = 56;
             enemy.y = 70;
             enemy.isStationary = true;
-            enemy.shootCooldown = 60;
+            enemy.shootCooldown = 90;
             enemy.phase = Math.random() * Math.PI * 2;
             break;
         case 'fighter':
@@ -1247,7 +1241,7 @@ function spawnEnemy() {
             break;
         case 'boss':
             enemy.isMidBoss = true;
-            enemy.hp = 20 + wave * 5;
+            enemy.hp = 8 + wave * 2; // Reduced to ~40% of original for better balance
             enemy.maxHp = enemy.hp;
             enemy.speed = ENEMY_BASE_SPEED * 0.3;
             enemy.score = 2000;
@@ -2002,7 +1996,7 @@ function update() {
                             height: 12,
                             speed: 2
                         });
-                        enemy.shootCooldown = Math.max(60, 110 - wave * 4); // slower fire rate
+                        enemy.shootCooldown = Math.max(75, 120 - wave * 4); // wider interval for balance
                     }
                 }
                 break;
@@ -2818,6 +2812,11 @@ function update() {
             powerups.splice(i, 1);
         }
     }
+    
+    // === FINAL BOSS DEATH CHECK: Run at end of update to catch same-frame boss kills ===
+    if (bossDefeated && !hyperspaceActive && !deathActive) {
+        onBossDefeated();
+    }
 }
 
 // ============================================
@@ -3378,11 +3377,11 @@ function drawBackground() {
 
     // Boss tint overlay (reddish during boss fights)
     if (bossIsFinalBoss && bossActive) {
-        bossHPBarAlpha = Math.min(1, bossHPBarAlpha + 0.02);
+        if (bossIsFinalBoss) bossHPBarAlpha = Math.min(1, bossHPBarAlpha + 0.02);
         ctx.fillStyle = 'rgba(60, 0, 0, ' + (0.06 + Math.sin(frameCount * 0.03) * 0.03) + ')';
         ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     } else {
-        bossHPBarAlpha = Math.max(0, bossHPBarAlpha - 0.03);
+        if (!bossIsFinalBoss || !bossActive) bossHPBarAlpha = Math.max(0, bossHPBarAlpha - 0.03);
     }
 
     // === NEBULA for current planet ===
