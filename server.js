@@ -2,18 +2,12 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 4012;
+const PORT = 4001;
 
 const mimeTypes = {
     '.html': 'text/html',
     '.js': 'application/javascript',
     '.css': 'text/css',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.svg': 'image/svg+xml',
-    '.json': 'application/json',
-    '.txt': 'text/plain',
 };
 
 const server = http.createServer((req, res) => {
@@ -21,7 +15,7 @@ const server = http.createServer((req, res) => {
     filePath = '.' + filePath;
     
     const ext = path.extname(filePath);
-    const contentType = mimeTypes[ext] || 'application/octet-stream';
+    const contentType = mimeTypes[ext] || 'text/plain';
     
     fs.readFile(filePath, (err, data) => {
         if (err) {
