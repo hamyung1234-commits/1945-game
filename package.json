@@ -4,5 +4,8 @@
   "scripts": {
     "start": "node server.js",
     "build": "echo No build step required - static project"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }

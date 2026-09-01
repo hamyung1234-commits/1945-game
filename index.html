@@ -162,30 +162,5 @@
     </div>
     
     <script src="game.js"></script>
-    <script>
-        // PATCH: Fix B item (bomb) - restore full power
-        const _origUseBomb = useBomb;
-        useBomb = function() {
-            if (typeof deathActive !== 'undefined' && deathActive) return;
-            if (player.bombs <= 0) return;
-            
-            player.bombs--;
-            
-            // Destroy ALL enemies
-            for (let i = enemies.length - 1; i >= 0; i--) {
-                createExplosion(enemies[i].x, enemies[i].y, 10);
-                score += enemies[i].score || 10;
-                enemies.splice(i, 1);
-            }
-            
-            // Clear ALL enemy bullets
-            enemyBullets = [];
-            
-            // Big screen flash
-            createExplosion(GAME_WIDTH / 2, GAME_HEIGHT / 2, 50);
-        };
-        
-        console.log('[BOMB FIX] B item power restored - all enemies and bullets cleared');
-    </script>
 </body>
 </html>

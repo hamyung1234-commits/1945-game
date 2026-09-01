@@ -457,7 +457,7 @@ function stopLaserSound() {
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 720;
 const PLAYER_SPEED = 6;
-const BULLET_SPEED = 12;
+const BULLET_SPEED = 8;
 const ENEMY_BASE_SPEED = 2;
 const MAX_PARTICLES = 150;  // Perf: global explosion particle cap
 
@@ -483,13 +483,34 @@ let bossIsFinalBoss = false;  // true = stage-end boss, false = mid-boss
 let bossDeathX = 0, bossDeathY = 0;  // Boss death position for explosion effect
 let midBossStreak = 0;
 
+// === FINAL BOSS INTRO SEQUENCE (2026-09) ===
+// bossIntroPhase: 'siren' → 'escort' → 'spawn'
+// 'siren'   — red siren overlay flashes for ~60 frames (~1s)
+// 'escort'  — dense swarm of escort enemies drifts down from top of screen
+//             for ~4s (or until cleared). Escorts fire NO bullets — pure visual escort.
+// 'spawn'   — normal boss-fight state; the actual final boss entity is now present.
+let bossIntroPhase = null;
+let bossIntroTimer = 0;
+let bossSirenTimer = 0;          // drives the red flash overlay
+let bossSirenDuration = 30;      // 0.5s @ 60fps — brief warning flash, then escorts immediately
+let bossEscortSpawnTimer = 0;
+let bossEscortSpawnedCount = 0;
+let bossEscortMax = 28;          // very dense screen-filling swarm
+let bossEscortActiveCount = 0;
+let bossEscortStartTimer = 0;    // 4s countdown while escort window is open
+let bossEscortWindowFrames = 240; // 4s @ 60fps
+let bossPendingPayload = null;   // deferred final-boss entity (spawned after escort clears)
+
 // === HYPERSPACE / STAGE SYSTEM ===
 let currentStage = 1;              // Current macro-stage (was "wave" conceptually)
-let stageWave = 1;                 // Sub-wave within current stage (1-10)
+let stageWave = 1;                 // Sub-wave within current stage (1-12)
 let stageTimer = 0;                // Timer for sub-wave progression
-const STAGE_WAVES = 10;            // 10 sub-waves per stage
-const STAGE_WAVE_DURATION = 1260;  // 70% of original 1800 frames (21s)
+const STAGE_WAVES = 15;            // 15 sub-waves per stage (then stage boss appears)
+const STAGE_WAVE_DURATION = 1500;  // 25 seconds per sub-wave @ 60fps
 const HYPERSPACE_TOTAL = 240;      // 4 seconds at 60fps
+const WAVE_FLASH_DURATION = 90;    // Wave announce text fade duration (frames)
+let waveAnnounceTimer = 0;         // Wave announce text countdown
+let waveAnnounceText = '';         // Wave announce text content
 let hyperspaceActive = false;      // Hyperspace jump in progress
 let hyperspaceTimer = 0;           // Hyperspace duration counter
 let hyperspacePhase = 0;           // 0=rise, 1=streak, 2=arrive
@@ -507,6 +528,42 @@ let spawnBoost = 0;
 let noSpawnCounter = 0;
 let lastSpawnFrame = 0;
 
+// === SLOW-MOTION SYSTEM (used by final boss death + player death) ===
+let slowMoTimer = 0;            // frames remaining at slowed time scale
+let slowMoMaxScale = 1.0;       // target time scale (0.3 = 30% speed)
+let slowMoFade = 8;             // frames to lerp from 1.0 → maxScale at start
+let slowMoFadeOut = 60;         // frames to lerp from maxScale → 1.0 at end
+function startSlowMo(duration, maxScale) {
+    // Start slow-motion for `duration` frames at `maxScale` (e.g. 0.3 = 30% speed).
+    // First `slowMoFade` frames lerp 1.0 → maxScale, then last `slowMoFadeOut` frames
+    // lerp back to 1.0, middle stays at maxScale.
+    if (typeof duration !== 'number') duration = 90;
+    if (typeof maxScale !== 'number') maxScale = 0.3;
+    slowMoTimer = duration;
+    slowMoMaxScale = maxScale;
+    slowMoFade = 8;
+    slowMoFadeOut = Math.min(60, Math.floor(duration * 0.7));
+}
+function getTimeScale() {
+    // Returns the current global time multiplier in [slowMoMaxScale, 1.0].
+    if (slowMoTimer <= 0) return 1.0;
+    const elapsed = slowMoTimer;
+    const total = slowMoMaxScale > 0 ? 90 : 90; // unused, kept for readability
+    return 1.0; // unused — real computation happens in update
+}
+let timeScale = 1.0;            // global time multiplier (updated each frame)
+
+// === FINAL BOSS DEATH CASCADE (multi-step explosion) ===
+let bossCascadeActive = false;
+let bossCascadeStep = 0;        // 0=idle, 1=chain small pops, 2=big final + slow-mo
+let bossCascadeTimer = 0;
+let bossCascadeX = 0;
+let bossCascadeY = 0;
+let bossCascadeSubTimer = 0;    // frames between chain pops
+
+// === HEAVYBOMBER DEATH FALL (mid-boss falling sequence) ===
+const HEAVY_FALL_DURATION = 80; // frames falling + smoke before big explosion
+
 // === DESIGN OVERHAUL: New visual state variables ===
 let screenShake = 0;              // Frames of screen shake remaining
 let screenShakeIntensity = 5;     // Max pixel offset
@@ -519,6 +576,63 @@ let planets = [];                 // Background planets array
 let bossHPBarAlpha = 0;           // Boss HP bar fade-in alpha
 let bgStars = [];               // Tiny distant background stars
 let cloudLayer = [];            // Background cloud wisps
+
+// === Laser (W) weapon balance tuning — easily adjustable knobs ===
+const LASER_MAX_LEVEL = 6;           // max laserLevel (0..LASER_MAX_LEVEL → up to 7 ticks but capped to ACTIVE_BEAM_CAP)
+const LASER_ACTIVE_BEAM_CAP = 3;     // max simultaneously-active beams regardless of level (1..LASER_MAX_LEVEL+1)
+const LASER_MAX_TARGETS = 3;         // max distinct enemies one wave can target
+const LASER_RANGE_Y = 220;           // enemies must have y >= player.y - LASER_RANGE_Y to be targetable
+const LASER_RANGE_X = 360;           // enemies must be within this horizontal distance of player
+const LASER_TICK_INTERVAL = 22;      // frames between damage ticks (was 16)
+const LASER_DAMAGE_BASE = 0.22;      // base per-tick damage (was 0.76 → 0.55 → 0.22, -60% from 0.55)
+const LASER_DAMAGE_PER_LEVEL = 0.032; // damage grows per laserLevel (-60% from 0.08)
+
+// === PERFORMANCE MODE (auto-engaged when many entities are on screen) ===
+// When the total visible enemies + bullets + effects exceed PERF_MODE_THRESHOLD,
+// heavy graphics features (shadowBlur, expensive gradients on glow) are skipped
+// to keep the frame rate playable on low-end Android devices.
+const PERF_MODE_THRESHOLD = 80;      // total entities before perfMode engages
+const PERF_MODE_HYSTERESIS = 12;     // wait this many fewer entities to disengage
+let perfMode = false;                // toggled each frame based on entity count
+
+// === CACHED GRADIENTS (built once, reused across all frames) ===
+// Pre-built gradients for entities whose visual style doesn't change per-frame.
+// ctx.createLinearGradient/createRadialGradient is expensive on canvas2d and the
+// objects can be shared safely — the gradient's color stops are absolute.
+const GRAD_CACHE = {
+    bgSky: null,           // drawBackground: top→bottom sky gradient
+    bgOcean: null,         // drawBackground: ocean bottom gradient
+    sunGlow: null,         // drawBackground: sun radial
+    cloudBody: null,       // cloud body horizontal
+    cloudHighlight: null,  // cloud top highlight
+    playerWing: null,      // P-40 wing horizontal
+    playerBody: null,      // P-40 body vertical
+    playerCanopy: null,    // P-40 canopy vertical
+    scoutWing: null,       // scout enemy wing
+    scoutBody: null,       // scout enemy body
+    scoutCanopy: null,     // scout canopy
+    heavyWing: null,       // heavyBomber wing
+    heavyBody: null,       // heavyBomber body
+    heavyCanopy: null,     // heavyBomber canopy
+    finalFuselage: null,   // final boss fuselage
+    finalCanopy: null,     // final boss canopy
+    finalTail: null,       // final boss tail
+    finalWing: null,       // final boss wing
+    finalBody: null,       // drawWaveBoss body gradient
+    droneBody: null,       // drone body
+    droneWing: null,       // drone wing
+    droneCanopy: null,     // drone canopy
+    bulletCore: null,      // standard player bullet
+    bombFuse: null,        // bomb/falling bullet fuse
+    bombBody: null,        // bomb body vertical
+    bulletEnemyCore: null, // enemy bullet radial
+    hpBarFill: null,       // boss HP bar fill horizontal (cached w/ full width, scaled via ctx)
+    wUltText: null,        // W ultimate text vertical
+};
+// helper: returns true when perf-mode is active (so callers can branch on it)
+function isPerfMode() { return perfMode; }
+
+// Call once after ctx exists (deferred until first draw — see end of file body).
 
 // 7-level weapon system state
 let laserLevel = 0;          // W laser level (0-7, beams = level)
@@ -540,8 +654,8 @@ let sparkleFlashTimer = 0;     // Sparkle flash duration counter
 const player = {
     x: GAME_WIDTH / 2,
     y: GAME_HEIGHT - 80,
-    width: 48,
-    height: 48,
+    width: 62,   // +30% from 48 (user-requested: enlarge player ship)
+    height: 62,  // +30% from 48
     speed: PLAYER_SPEED,
     powerLevel: 0,
     bombs: 3,
@@ -576,6 +690,9 @@ let playerMissileLevel = 0;
 let explosions = [];
 let stars = [];
 
+// === BOSS DESTRUCTION: detached wing debris (separate physics objects) ===
+let bossWingDebris = [];
+
 // Background stars
 for (let i = 0; i < 100; i++) {
     stars.push({
@@ -593,7 +710,7 @@ const COLORS = {
     enemy: '#FF4444',
     enemy2: '#FF6B35',
     bullet: '#FFD700',
-    enemyBullet: '#FF1493',
+    enemyBullet: '#FF3300',
     powerup: '#00FF00',
     powerupP: '#00FF00',
     powerupB: '#FF8C00',
@@ -987,50 +1104,247 @@ function startGame() {
     mUltimateMissile = null;
     
     startBGM();
+    buildGradCache(); // PERF: build cached gradients once at game start
+}
+
+// === Cached gradient builder ===
+// Builds reusable CanvasGradient objects for entities whose color stops are
+// constant across frames. Saves ~30 createLinearGradient/createRadialGradient
+// allocations per frame when many entities are visible.
+function buildGradCache() {
+    if (GRAD_CACHE.bgSky) return; // already built
+
+    // Background sky (drawn at full canvas height)
+    const sky = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+    sky.addColorStop(0, '#0a1a3a');
+    sky.addColorStop(0.5, '#2a4870');
+    sky.addColorStop(1, '#5a7aa0');
+    GRAD_CACHE.bgSky = sky;
+
+    // Background ocean (bottom)
+    const ocean = ctx.createLinearGradient(0, GAME_HEIGHT * 0.6, 0, GAME_HEIGHT);
+    ocean.addColorStop(0, '#1a3858');
+    ocean.addColorStop(1, '#0a1830');
+    GRAD_CACHE.bgOcean = ocean;
+
+    // Sun radial
+    const sun = ctx.createRadialGradient(
+        GAME_WIDTH * 0.78, GAME_HEIGHT * 0.74, 0,
+        GAME_WIDTH * 0.78, GAME_HEIGHT * 0.74, 220
+    );
+    sun.addColorStop(0, 'rgba(255,220,160,0.55)');
+    sun.addColorStop(0.4, 'rgba(255,180,120,0.25)');
+    sun.addColorStop(1, 'rgba(255,160,100,0)');
+    GRAD_CACHE.sunGlow = sun;
+
+    // === Background-specific gradients (drawBackground uses these) ===
+    // Dusk sky gradient for 1945 themed background
+    const skyDusk = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+    skyDusk.addColorStop(0, '#1a3a6b');
+    skyDusk.addColorStop(0.55, '#5b8bbf');
+    skyDusk.addColorStop(0.78, '#a9c4dc');
+    skyDusk.addColorStop(0.82, '#0c2a4a');
+    skyDusk.addColorStop(1, '#081f3a');
+    GRAD_CACHE.bgSkyDusk = skyDusk;
+
+    // Dusk sun glow radial (matches drawBackground literals exactly)
+    const sunDusk = ctx.createRadialGradient(
+        GAME_WIDTH * 0.78, GAME_HEIGHT * 0.74, 0,
+        GAME_WIDTH * 0.78, GAME_HEIGHT * 0.74, 220
+    );
+    sunDusk.addColorStop(0, 'rgba(255, 220, 160, 0.55)');
+    sunDusk.addColorStop(0.4, 'rgba(255, 180, 120, 0.18)');
+    sunDusk.addColorStop(1, 'rgba(255, 180, 120, 0)');
+    GRAD_CACHE.sunGlowDusk = sunDusk;
+
+    // Cloud body horizontal (generic)
+    const cBody = ctx.createLinearGradient(0, 0, 120, 0);
+    cBody.addColorStop(0, 'rgba(255,255,255,0.10)');
+    cBody.addColorStop(0.5, 'rgba(255,255,255,0.20)');
+    cBody.addColorStop(1, 'rgba(255,255,255,0.10)');
+    GRAD_CACHE.cloudBody = cBody;
+
+    const cHi = ctx.createLinearGradient(0, 0, 0, 30);
+    cHi.addColorStop(0, 'rgba(255,255,255,0.30)');
+    cHi.addColorStop(1, 'rgba(255,255,255,0)');
+    GRAD_CACHE.cloudHighlight = cHi;
+
+    // Player P-40 — colors must match drawPlayer literals exactly.
+    const pWing = ctx.createLinearGradient(-24, 0, 24, 0);
+    pWing.addColorStop(0, '#1F4F8A');
+    pWing.addColorStop(0.5, '#3D7AB8');
+    pWing.addColorStop(1, '#1F4F8A');
+    GRAD_CACHE.playerWing = pWing;
+
+    const pBody = ctx.createLinearGradient(0, -16, 0, 16);
+    pBody.addColorStop(0, '#1F4F8A');
+    pBody.addColorStop(0.5, '#3D7AB8');
+    pBody.addColorStop(1, '#1A3A6A');
+    GRAD_CACHE.playerBody = pBody;
+
+    const pCanopy = ctx.createLinearGradient(0, -8, 0, -2);
+    pCanopy.addColorStop(0, '#5ce0ff');
+    pCanopy.addColorStop(0.5, '#a0f0ff');
+    pCanopy.addColorStop(1, '#3aa0d0');
+    GRAD_CACHE.playerCanopy = pCanopy;
+
+    // Scout enemy (small fighter)
+    const sWing = ctx.createLinearGradient(-20, 0, 20, 0);
+    sWing.addColorStop(0, '#661111');
+    sWing.addColorStop(0.5, '#AA2222');
+    sWing.addColorStop(1, '#661111');
+    GRAD_CACHE.scoutWing = sWing;
+
+    const sBody = ctx.createLinearGradient(-5, -16, 5, 12);
+    sBody.addColorStop(0, '#FF6644');
+    sBody.addColorStop(0.5, '#CC2222');
+    sBody.addColorStop(1, '#661111');
+    GRAD_CACHE.scoutBody = sBody;
+
+    const sCanopy = ctx.createLinearGradient(0, -10, 0, -2);
+    sCanopy.addColorStop(0, '#5ce0ff');
+    sCanopy.addColorStop(0.5, '#a0f0ff');
+    sCanopy.addColorStop(1, '#3aa0d0');
+    GRAD_CACHE.scoutCanopy = sCanopy;
+
+    // Heavy bomber mid-boss
+    const hWing = ctx.createLinearGradient(-28, 0, 28, 0);
+    hWing.addColorStop(0, '#444444');
+    hWing.addColorStop(0.5, '#777777');
+    hWing.addColorStop(1, '#444444');
+    GRAD_CACHE.heavyWing = hWing;
+
+    const hBody = ctx.createLinearGradient(-7, -20, 7, 14);
+    hBody.addColorStop(0, '#AAAAAA');
+    hBody.addColorStop(0.5, '#666666');
+    hBody.addColorStop(1, '#333333');
+    GRAD_CACHE.heavyBody = hBody;
+
+    // Final boss (slender interceptor — body, canopy, tail, wing)
+    // drawFinalBoss (slender interceptor) — colors must match drawFinalBoss literals.
+    const fFuse = ctx.createLinearGradient(0, -15, 0, 22);
+    fFuse.addColorStop(0, '#4A5260');
+    fFuse.addColorStop(0.5, '#2A323E');
+    fFuse.addColorStop(1, '#181C24');
+    GRAD_CACHE.finalFuselage = fFuse;
+
+    const fCanopy = ctx.createLinearGradient(0, -14, 0, 2);
+    fCanopy.addColorStop(0, '#5AFFB0');
+    fCanopy.addColorStop(0.5, '#1AA060');
+    fCanopy.addColorStop(1, '#0A4030');
+    GRAD_CACHE.finalCanopy = fCanopy;
+
+    const fTail = ctx.createLinearGradient(0, 20, 0, 50);
+    fTail.addColorStop(0, '#3A4250');
+    fTail.addColorStop(1, '#1A2028');
+    GRAD_CACHE.finalTail = fTail;
+
+    const fWing = ctx.createLinearGradient(-100, 0, 100, 0);
+    fWing.addColorStop(0, '#3a2818');
+    fWing.addColorStop(0.5, '#5a4030');
+    fWing.addColorStop(1, '#3a2818');
+    GRAD_CACHE.finalWing = fWing;
+
+    // drawWaveBoss (red heavy) — body
+    const fBody = ctx.createLinearGradient(-20, -30, 20, 30);
+    fBody.addColorStop(0, '#CC4444');
+    fBody.addColorStop(0.5, '#882222');
+    fBody.addColorStop(1, '#440000');
+    GRAD_CACHE.finalBody = fBody;
+
+    // Drone (pink/magenta — small prop fighter) — colors must match drawDrone literals.
+    const dBody = ctx.createLinearGradient(-3, -10, 3, 10);
+    dBody.addColorStop(0, '#FFCCDD');
+    dBody.addColorStop(0.5, '#FF66AA');
+    dBody.addColorStop(1, '#993366');
+    GRAD_CACHE.droneBody = dBody;
+
+    const dWing = ctx.createLinearGradient(-12, 0, 12, 0);
+    dWing.addColorStop(0, '#CC3366');
+    dWing.addColorStop(0.5, '#FF4488');
+    dWing.addColorStop(1, '#CC3366');
+    GRAD_CACHE.droneWing = dWing;
+
+    const dCanopy = ctx.createLinearGradient(0, -7, 0, 0);
+    dCanopy.addColorStop(0, '#88DDFF');
+    dCanopy.addColorStop(1, '#224466');
+    GRAD_CACHE.droneCanopy = dCanopy;
+
+    // Standard player bullet (cached w/ relative coords, ctx transforms to bullet pos)
+    const bCore = ctx.createLinearGradient(-3, -8, 3, 8);
+    bCore.addColorStop(0, '#fff8a0');
+    bCore.addColorStop(0.5, '#ffd040');
+    bCore.addColorStop(1, '#ff9020');
+    GRAD_CACHE.bulletCore = bCore;
+
+    // Bomb body vertical — colors must match drawBullet literals.
+    const bombBody = ctx.createLinearGradient(-7, -8, 7, 9);
+    bombBody.addColorStop(0, '#666');
+    bombBody.addColorStop(0.5, '#3A3A3A');
+    bombBody.addColorStop(1, '#1A1A1A');
+    GRAD_CACHE.bombBody = bombBody;
+
+    // Bomb fuse (radial)
+    const fuse = ctx.createRadialGradient(0, -10, 0, 0, -10, 4);
+    fuse.addColorStop(0, 'rgba(255,255,180,1)');
+    fuse.addColorStop(0.5, 'rgba(255,180,80,0.7)');
+    fuse.addColorStop(1, 'rgba(255,80,0,0)');
+    GRAD_CACHE.bombFuse = fuse;
+
+    // Enemy bullet core (radial — vivid red tone for high contrast on any background)
+    const eBullet = ctx.createRadialGradient(0, 0, 0, 0, 0, 8);
+    eBullet.addColorStop(0, 'rgba(255,120,80,1)');
+    eBullet.addColorStop(0.35, 'rgba(255,30,20,1)');
+    eBullet.addColorStop(0.75, 'rgba(200,20,20,0.9)');
+    eBullet.addColorStop(1, 'rgba(140,0,0,0)');
+    GRAD_CACHE.bulletEnemyCore = eBullet;
+
+    // Boss HP bar (full-width 300px, scaled via ctx when drawn)
+    const hp = ctx.createLinearGradient(0, 0, 300, 0);
+    hp.addColorStop(0, '#ff4040');
+    hp.addColorStop(0.5, '#ff8040');
+    hp.addColorStop(1, '#ffcc40');
+    GRAD_CACHE.hpBarFill = hp;
+
+    // W ultimate text vertical
+    const wUlt = ctx.createLinearGradient(0, 0, 0, 80);
+    wUlt.addColorStop(0, '#a0ffff');
+    wUlt.addColorStop(1, '#2080ff');
+    GRAD_CACHE.wUltText = wUlt;
 }
 
 function useBomb() {
+    if (typeof deathActive !== 'undefined' && deathActive) return;
     if (player.bombs <= 0) return;
+
     player.bombs--;
-    
-    // === PERF: Count enemies first to budget explosions ===
-    var enemyCount = enemies.length;
-    var bossCount = 0;
-    
-    // Destroy all enemies and bullets (except boss which takes 15% max HP damage)
-    // Reverse iteration for safe splice removal
-    for (var ei = enemies.length - 1; ei >= 0; ei--) {
-        var enemy = enemies[ei];
-        if (enemy.isWaveBoss) {
-            // ALL boss types take 15% of max HP damage from bomb - NEVER die from bomb
-            var bombDamage = Math.floor(enemy.maxHp * 0.15);
-            enemy.hp -= bombDamage;
-            // Boss cannot die from bomb - ensure minimum HP based on boss type
-            if (bossIsFinalBoss) { enemy.hp = Math.max(enemy.hp, 2); }
-            if (enemy.hp < 1) enemy.hp = 1;
-            bossCount++;
-        } else {
-            score += 10;
-            enemies.splice(ei, 1);
+
+    // Destroy ALL non-boss enemies — stage final boss is immune to bomb (only loses 8% HP)
+    const bombDamagePct = 0.08;
+    let finalBossHit = false;
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        const en = enemies[i];
+        // === DYING GUARD: skip enemies already in dying-fall / death-cascade (avoid double rewards) ===
+        if (en.dying) continue;
+        if (en.isWaveBoss) {
+            // Final boss is bomb-immune: only deal small damage, never destroy
+            const dmg = Math.max(1, Math.floor(en.hp * bombDamagePct));
+            en.hp -= dmg;
+            createExplosion(en.x, en.y, 4);
+            finalBossHit = true;
+            if (en.hp < 0) en.hp = 1; // safety floor so it can't be destroyed by bomb alone
+            continue;
         }
+        createExplosion(en.x, en.y, 10);
+        score += en.score || 10;
+        enemies.splice(i, 1);
     }
-    
-    // Clear all enemy bullets
+
+    // Clear ALL enemy bullets
     enemyBullets = [];
-    
-    // === PERF: MINIMAL explosions — 3 total max
-    for (var bi = 0; bi < 3; bi++) {
-        var bx = 60 + Math.random() * (GAME_WIDTH - 120);
-        var by = 80 + Math.random() * (GAME_HEIGHT - 200);
-        createExplosion(bx, by, 0.5);
-    }
-    
-    // Screen shake for impact
-    screenShake = Math.max(screenShake, 8);
-    screenShakeIntensity = Math.max(screenShakeIntensity, 4);
-    
-    // Rapid enemy respawn after bomb
-    spawnBoost = 90;
+
+    // Big screen flash at center
+    createExplosion(GAME_WIDTH / 2, GAME_HEIGHT / 2, 50);
 }
 
 function playerShoot() {
@@ -1110,6 +1424,11 @@ function playerShoot() {
 }
 
 function spawnEnemy() {
+    // === FINAL BOSS INTRO (2026-09): drive the siren/escort phase machine. ===
+    // This call is a no-op once the boss is fully spawned (phase === 'spawn'),
+    // so it is safe to invoke from every spawnEnemy caller without guard.
+    updateBossIntro();
+
     // Boss wave check: boss appears at sub-wave 10 of each stage
     // Also handle case where stageWave overshot due to timer
     // Force new boss spawn - remove any old boss that's still alive
@@ -1123,73 +1442,111 @@ function spawnEnemy() {
             }
             bossClaws = [];
         }
+        // === 2026-09 FINAL BOSS INTRO SEQUENCE ===
+        // Phase A: red siren flash (~60 frames)
+        // Phase B: swarm of escort enemies fills screen and drifts down (~240 frames)
+        //          - Escorts fire NO bullets — pure visual escort only
+        // Phase C: when escorts cleared (or 240f elapsed) → spawn the actual final boss
         bossActive = true;
         bossDefeated = false;
-        bossSpawned = true;  // Guard: boss actually spawned
+        bossSpawned = false;  // Guard: boss not yet spawned — escorts must clear first
         bossIsFinalBoss = true;
         bossWaveNumber = currentStage;
+        bossIntroPhase = 'siren';          // 'siren' | 'escort' | 'spawn'
+        bossIntroTimer = 0;
+        bossSirenTimer = 0;                // drives the red flash overlay
+        bossEscortSpawnTimer = 0;
+        bossEscortSpawnedCount = 0;
+        bossEscortMax = 28;                // very dense screen-filling swarm
+        bossEscortActiveCount = 0;
+        bossEscortStartTimer = 0;          // 4-second timer for escort descent window
+        bossEscortWindowFrames = 240;      // 4s @ 60fps
         
         // Boss HP: first boss = mid-boss * 3 (20+10*5=70, so 210)
         // Each subsequent boss +30% from previous boss
+        // (2026-09 update) Final boss HP doubled (x2) for the escort-stage finale.
         const bossNumber = currentStage; // Boss number = current stage
         const baseMidBossHP = 20 + 10 * 5; // mid-boss HP at wave 10 = 70
-        let bossHP = baseMidBossHP * 3; // 210 for first boss
+        let bossHP = Math.round(baseMidBossHP * 3); // 210 for first boss (integer)
         for (let b = 1; b < bossNumber; b++) {
-            bossHP = Math.floor(bossHP * 1.3);
+            bossHP = Math.round(bossHP * 1.3);
         }
+        bossHP = bossHP * 2; // Final boss: +100% HP (escort stage finale)
         bossBaseHP = bossHP;
         
         // Each boss appearance adds one more claw (first boss = 1 claw)
         bossClawCount = currentStage + 1;
         bossClaws = [];
         
-        const bossEnemy = {
+        // Boss payload is staged — it is created only when the escort clears.
+        // We hold the stats here so spawnFinalBoss() can build the entity later.
+        bossPendingPayload = {
             x: GAME_WIDTH / 2,
             y: -120,
-            width: 100,
-            height: 100,
-            type: 'boss',
+            // Visual size — B-52 spans ~340 wide × 96 tall (long bomber silhouette).
+            width: 340,
+            height: 96,
+            type: 'final',
             hp: bossHP,
             maxHp: bossHP,
             speed: ENEMY_BASE_SPEED * 0.25,
             score: 5000 + currentStage * 5000,
-            shootCooldown: 15,
+            shootCooldown: 60,
             angle: 0,
             phase: Math.random() * Math.PI * 2,
-            isWaveBoss: true
+            isWaveBoss: true,
+            // === B-52 hitbox segmentation ===
+            // Wings are huge but invulnerable. Only fuselage (center) and tail take damage.
+            // Coordinates are relative to enemy center (e.x, e.y). Visual layout:
+            //   wings:  x in [-170, -55] and [55, 170]   y in [-30, 30]   → invulnerable
+            //   body:   x in [-55, 55]                   y in [-25, 30]   → damageable (fuselage)
+            //   tail:   x in [-25, 25]                   y in [30, 60]    → damageable (tail)
+            hitboxWings: { xOff: 0, yOff: 0, halfW: 170, halfH: 30 },   // wings (for reference)
+            hitboxBody:  { xOff: 0, yOff: 2, halfW: 55, halfH: 28 },    // fuselage (center)
+            hitboxTail:  { xOff: 0, yOff: 45, halfW: 25, halfH: 15 },   // tail section
+            // Bomb-trail attack — drops a row of bombs slowly every cycle
+            bombTrailCooldown: 90,
+            bombTrailPhase: 0,
+            bombTrailBullets: 6    // bombs per trail
         };
-        enemies.push(bossEnemy);
-        
+        // (Boss entity push is deferred to spawnFinalBoss() after escort clears.)
+
         // Show boss warning flash
-        waveFlash = { active: true, timer: 120, text: 'BOSS' };
+        waveFlash = { active: true, timer: 120, text: 'WARNING: INCOMING BOSS' };
         // Cap stageWave at STAGE_WAVES while boss is alive
         if (stageWave > STAGE_WAVES) stageWave = STAGE_WAVES;
         // Reset stageTimer to give boss fight full duration
         stageTimer = 0;
+        // Block normal spawns during the entire boss intro (siren + escort)
         return;
     }
-    
+
+    // Block normal spawns during the boss intro (siren + escort phases)
+    if (bossActive && bossIntroPhase && bossIntroPhase !== 'spawn') {
+        return;
+    }
+
     // Spawn enemies slightly slower during boss fight (7/8 pass rate)
     if (bossActive && frameCount % 8 === 0) return;
     
     let types = ['scout', 'scout', 'scout', 'scout', 'scout', 'fighter', 'fighter', 'fighter', 'bomber', 'rammer'];
     if (wave >= 3) { types.push('fighter', 'bomber', 'rammer'); }
-    if (wave >= 17 && wave % 10 !== 0) types.push('boss');
+    // Mid-boss spawn: all mid-bosses unified to heavyBomber design (long bomber silhouette)
+    if (wave >= 17 && wave % 10 !== 0) types.push('heavyBomber');
     // At wave 15+, reduce small enemy types by 50% (prevent overwhelming spawns)
     if (currentStage >= 2 && stageWave !== STAGE_WAVES) {
-        // More small enemies for stage 2+ 
+        // More small enemies for stage 2+
         types = ['scout', 'scout', 'scout', 'scout', 'scout', 'fighter', 'fighter', 'fighter', 'bomber', 'rammer'];
-        // Mid-bosses only after wave >= 17 (same condition as stage 1)
+        // Mid-bosses only after wave >= 17 (same condition as stage 1) - unified heavyBomber
         if (wave >= 17 && wave % 10 !== 0) {
-            types.push('boss');
-            types.push('octopus');
+            types.push('heavyBomber');
         }
     }
     
     let type = types[Math.floor(Math.random() * types.length)];
     
     // Limit consecutive mid-boss spawns to 5 before forcing a break
-    if (type === 'boss' || type === 'octopus') {
+    if (type === 'heavyBomber') {
         midBossStreak++;
         if (midBossStreak > 3) {
             // Force a non-boss enemy after 5 consecutive mid-bosses
@@ -1201,32 +1558,32 @@ function spawnEnemy() {
         midBossStreak = 0;
     }
     
-    // CAP: Max 2 octopus on screen at once (prevent mass accumulation)
-    if (type === 'octopus') {
-        let octoCount = 0;
+    // CAP: Max 2 heavy bombers on screen at once (prevent mass accumulation)
+    if (type === 'heavyBomber') {
+        let bomberCount = 0;
         for (let ec = 0; ec < enemies.length; ec++) {
-            if (enemies[ec].type === 'octopus') octoCount++;
+            if (enemies[ec].type === 'heavyBomber') bomberCount++;
         }
-        if (octoCount >= 2) {
+        if (bomberCount >= 2) {
             const fallbackTypes = ['scout', 'fighter', 'bomber', 'rammer'];
             type = fallbackTypes[Math.floor(Math.random() * fallbackTypes.length)];
         }
     }
     
-    // CAP: Max 3 total mid-bosses on screen
-    if (type === 'boss' || type === 'octopus') {
+    // CAP: Max 3 total mid-bosses on screen (all heavyBomber)
+    if (type === 'heavyBomber') {
         let bossCount = 0;
         for (let bc = 0; bc < enemies.length; bc++) {
-            if (enemies[bc].type === 'boss' || enemies[bc].type === 'octopus') bossCount++;
+            if (enemies[bc].type === 'heavyBomber') bossCount++;
         }
         if (bossCount >= 3) {
             const fallbackTypes = ['scout', 'fighter', 'bomber', 'rammer'];
             type = fallbackTypes[Math.floor(Math.random() * fallbackTypes.length)];
         }
     }
-    
+
     // During spawnBoost (rapid spawn after stage start), skip mid-bosses entirely
-    if (spawnBoost > 0 && (type === 'boss' || type === 'octopus')) {
+    if (spawnBoost > 0 && type === 'heavyBomber') {
         const fallbackTypes = ['scout', 'fighter', 'bomber', 'rammer'];
         type = fallbackTypes[Math.floor(Math.random() * fallbackTypes.length)];
     }
@@ -1255,18 +1612,22 @@ function spawnEnemy() {
             enemy.width = 36;
             enemy.height = 36;
             break;
-        case 'octopus':
-            // Alien octopus mid-boss (from wave 15) - stays at top, attacks with tentacles
-            enemy.hp = Math.floor((3 + currentStage * 3) * 0.7); // Scaled with new mid-boss HP
+        case 'heavyBomber':
+            // Heavy bomber mid-boss (replaces octopus) - aerial, slow, fires homing missiles from both wings
+            enemy.isMidBoss = true; // CRITICAL: required for dying-fall to trigger on kill
+            enemy.isHeavyBomber = true;
+            enemy.hp = Math.round((((3 + currentStage * 3) * 0.7) + 2) * 3.2); // +220% tankier than baseline (1.6× + additional 100%)
             enemy.maxHp = enemy.hp;
-            enemy.speed = 0;
-            enemy.score = 700;
-            enemy.width = 56;
-            enemy.height = 56;
-            enemy.y = 70;
-            enemy.isStationary = true;
-            enemy.shootCooldown = 90;
+            enemy.speed = 0.4 + currentStage * 0.05;
+            enemy.score = 750;
+            enemy.width = 70;
+            enemy.height = 50;
+            enemy.y = 80;
+            enemy.isStationary = false;
+            enemy.shootCooldown = 150; // Initial cooldown
+            enemy.wingSide = 0; // 0 = left wing next, 1 = right wing next
             enemy.phase = Math.random() * Math.PI * 2;
+            enemy._movePhase = Math.random() * Math.PI * 2;
             break;
         case 'fighter':
             enemy.hp = 2;
@@ -1286,15 +1647,22 @@ function spawnEnemy() {
             enemy.shootCooldown = 120;
             break;
         case 'boss':
+            // Legacy alias → unified to heavyBomber design (long bomber silhouette)
+            // Spawn logic no longer emits 'boss' but kept for back-compat / future use
             enemy.isMidBoss = true;
-            enemy.hp = 3 + currentStage * 3; // Stage1=6, Stage2=9, Stage3=12 (balanced)
+            enemy.isHeavyBomber = true;
+            enemy.hp = Math.round((((3 + currentStage * 3) * 0.7) + 2) * 3.2);
             enemy.maxHp = enemy.hp;
-            enemy.speed = ENEMY_BASE_SPEED * 0.3;
-            enemy.score = 2000;
-            enemy.width = 80;
-            enemy.height = 80;
-            enemy.y = -100;
-            enemy.shootCooldown = 20;
+            enemy.speed = 0.4 + currentStage * 0.05;
+            enemy.score = 750;
+            enemy.width = 70;
+            enemy.height = 50;
+            enemy.y = 80;
+            enemy.isStationary = false;
+            enemy.shootCooldown = 150;
+            enemy.wingSide = 0;
+            enemy.phase = Math.random() * Math.PI * 2;
+            enemy._movePhase = Math.random() * Math.PI * 2;
             break;
         case 'rammer':
             enemy.hp = 1 + Math.floor(currentStage * 0.7);
@@ -1342,54 +1710,278 @@ function spawnPowerup(x, y, isBossKill) {
     });
 }
 
+// ====================================================================
+// === FINAL BOSS INTRO (2026-09) =======================================
+// ====================================================================
+// Three-phase cinematic entrance for the stage final boss:
+//   'siren'  — red emergency siren flashes for ~1.5s
+//   'escort' — dense swarm of escort aircraft fills the screen and drifts
+//              downward (left/right or in tight columns). Escorts NEVER fire —
+//              they are pure visual escort for the incoming boss.
+//   'spawn'  — escort window ends (escorts cleared or 4s elapsed) → the
+//              actual final boss entity is spawned from bossPendingPayload.
+//
+// Escort enemies are flagged with `isBossEscort = true`. They use normal
+// collision HP and give normal score, but their bullet cooldown is disabled.
+// ====================================================================
+
+function spawnBossEscort() {
+    // Pick spawn pattern: column (tight vertical line) or side entry (L/R)
+    const pattern = Math.floor(Math.random() * 3); // 0 = left, 1 = right, 2 = column
+    const xBase = pattern === 0 ? -20 : (pattern === 1 ? GAME_WIDTH + 20 : GAME_WIDTH / 2);
+    const xJitter = (Math.random() - 0.5) * 30;
+    const x = xBase + xJitter;
+    const y = -30 - Math.random() * 60;
+
+    // For columns: create a small flock at once instead of single
+    if (pattern === 2) {
+        const colWidth = 50;
+        const count = 4 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < count && bossEscortSpawnedCount < bossEscortMax; i++) {
+            const ex = GAME_WIDTH / 2 + (i - (count - 1) / 2) * colWidth;
+            const ey = y - i * 28;
+            pushBossEscortEnemy(ex + (Math.random() - 0.5) * 14, ey, i % 2 === 0 ? 'scout' : 'fighter');
+        }
+        return;
+    }
+
+    // Side entry: single escort
+    const t = (pattern === 0) ? 'fighter' : (Math.random() < 0.5 ? 'scout' : 'fighter');
+    pushBossEscortEnemy(x, y, t);
+}
+
+function pushBossEscortEnemy(x, y, kind) {
+    // Small visual size, no bullets, slightly faster than normal scout to fill screen.
+    const enemy = {
+        x: x,
+        y: y,
+        width: kind === 'fighter' ? 30 : 26,
+        height: kind === 'fighter' ? 30 : 26,
+        type: kind,           // 'scout' or 'fighter' — drawn with existing drawEnemyAircraft branches
+        hp: 1,
+        maxHp: 1,
+        speed: ENEMY_BASE_SPEED * 0.85,
+        score: 50,
+        shootCooldown: 99999, // effectively disabled — no bullets
+        shootCooldownMax: 99999,
+        angle: 0,
+        phase: Math.random() * Math.PI * 2,
+        isBossEscort: true,   // mark as escort (for update logic + filtering)
+        // Smooth lateral sway: gentle sinusoidal L/R drift while descending.
+        escortSwayAmp: 20 + Math.random() * 18,
+        escortSwayFreq: 0.025 + Math.random() * 0.02,
+        escortSwayPhase: Math.random() * Math.PI * 2,
+        escortSwayCenter: x
+    };
+    enemies.push(enemy);
+    bossEscortSpawnedCount++;
+}
+
+function updateBossIntro() {
+    if (!bossActive || !bossIntroPhase || bossIntroPhase === 'spawn') return;
+
+    // === SIREN PHASE — red overlay flash for ~1.5s ===
+    if (bossIntroPhase === 'siren') {
+        bossSirenTimer++;
+        if (bossSirenTimer >= bossSirenDuration) {
+            bossIntroPhase = 'escort';
+            bossEscortStartTimer = 0;
+            bossEscortSpawnTimer = 0;
+            bossEscortSpawnedCount = 0;
+            bossEscortActiveCount = 0;
+        }
+        return;
+    }
+
+    // === ESCORT PHASE — spawn escorts continuously and let them drift ===
+    if (bossIntroPhase === 'escort') {
+        bossEscortStartTimer++;
+        bossEscortSpawnTimer++;
+
+        // Spawn cadence: about every 6 frames so screen fills quickly
+        if (bossEscortSpawnTimer >= 6 && bossEscortSpawnedCount < bossEscortMax) {
+            bossEscortSpawnTimer = 0;
+            spawnBossEscort();
+        }
+
+        // Update escort-specific behavior each frame (sway + descent)
+        for (let i = 0; i < enemies.length; i++) {
+            const en = enemies[i];
+            if (!en || !en.isBossEscort) continue;
+            // Lateral sinusoidal sway around escortSwayCenter
+            en.x = en.escortSwayCenter + Math.sin(frameCount * en.escortSwayFreq + en.escortSwayPhase) * en.escortSwayAmp;
+            en.y += en.speed;
+            // Remove if drifted past bottom — counts as "cleared"
+            if (en.y > GAME_HEIGHT + 40) {
+                en.markRemove = true;
+            }
+        }
+        // Reap off-screen escorts
+        if (enemies.some(e => e && e.markRemove)) {
+            enemies = enemies.filter(e => !e.markRemove);
+        }
+
+        // Count remaining escorts
+        let remain = 0;
+        for (let j = 0; j < enemies.length; j++) {
+            if (enemies[j] && enemies[j].isBossEscort) remain++;
+        }
+        bossEscortActiveCount = remain;
+
+        // Escort window closes when: (a) all spawned escorts cleared, OR
+        //                              (b) 4 seconds elapsed from escort start
+        const elapsedEnough = bossEscortStartTimer >= bossEscortWindowFrames;
+        const allCleared = (bossEscortSpawnedCount >= bossEscortMax && remain === 0);
+        if (elapsedEnough || allCleared) {
+            spawnFinalBoss();
+        }
+        return;
+    }
+}
+
+function spawnFinalBoss() {
+    // Promote the deferred payload to an actual enemy entity.
+    if (!bossPendingPayload) {
+        // Defensive fallback — should never happen, but keep boss fight alive.
+        bossIntroPhase = 'spawn';
+        bossSpawned = true;
+        return;
+    }
+    enemies.push(Object.assign({}, bossPendingPayload));
+    bossPendingPayload = null;
+    bossIntroPhase = 'spawn';
+    bossSpawned = true;
+    // Big boss entry flash
+    waveFlash = { active: true, timer: 120, text: 'BOSS' };
+    // Reset stageTimer to give boss fight full duration
+    stageTimer = 0;
+}
+
+function drawBossSirenOverlay() {
+    if (!bossActive || bossIntroPhase !== 'siren') return;
+    // Strobe between dark red and bright red. Frame count % 6 alternates.
+    const t = bossSirenTimer;
+    // Build a 3-pulse envelope: 0..30 bright, 30..45 dark, 45..90 bright pulse,
+    // to look like an emergency siren.
+    let alpha = 0;
+    if (t < 30) {
+        alpha = 0.35 * (t / 30);
+    } else if (t < 45) {
+        alpha = 0.35 * (1 - (t - 30) / 15);
+    } else if (t < 60) {
+        alpha = 0.30 * ((t - 45) / 15);
+    } else if (t < 75) {
+        alpha = 0.30 * (1 - (t - 60) / 15);
+    } else {
+        alpha = 0.45 * Math.min(1, (t - 75) / 15);
+    }
+    if (alpha <= 0) return;
+    // Full-screen red flash
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#FF1818';
+    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    // Siren border vignette
+    ctx.globalAlpha = alpha * 0.9;
+    const vig = ctx.createRadialGradient(
+        GAME_WIDTH / 2, GAME_HEIGHT / 2, Math.min(GAME_WIDTH, GAME_HEIGHT) * 0.3,
+        GAME_WIDTH / 2, GAME_HEIGHT / 2, Math.max(GAME_WIDTH, GAME_HEIGHT) * 0.7
+    );
+    vig.addColorStop(0, 'rgba(255, 30, 30, 0)');
+    vig.addColorStop(1, 'rgba(180, 0, 0, 0.85)');
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    // WARNING text
+    ctx.globalAlpha = Math.min(1, alpha * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 36px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('!! WARNING !!', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 20);
+    ctx.font = 'bold 18px monospace';
+    ctx.fillStyle = '#FFE0E0';
+    ctx.fillText('INCOMING HOSTILES', GAME_WIDTH / 2, GAME_HEIGHT / 2 + 16);
+    ctx.restore();
+}
+
+function drawBossEscortLabel() {
+    if (!bossActive || bossIntroPhase !== 'escort') return;
+    // Small caption at top so the player understands the escort role.
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = '#FFD060';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const remain = bossEscortMax - bossEscortSpawnedCount + bossEscortActiveCount;
+    ctx.fillText('BOSS ESCORT — CLEAR THEM (' + remain + ')', GAME_WIDTH / 2, 8);
+    ctx.restore();
+}
+
 function createExplosion(x, y, scale) {
-    // === PERF: Hard cap — skip entirely if particle budget exhausted ===
-    if (explosions.length >= MAX_PARTICLES) return;
     scale = scale || 1.0;
-    // === PERF: DRASTIC 80% reduction for playable framerate ===
+    // === PERF: Adaptive particle budget for screen density ===
     var overloaded = explosions.length > 120;
     var mult = overloaded ? 0.35 : 0.5;
     var sc = scale * mult;
-    // Tiny core flash — only for scale >= 1.5
-    if (scale >= 1.5 && explosions.length < 100) {
-        explosions.push({x:x,y:y,vx:0,vy:0,size:3*sc,life:1.0,decay:0.18,color:'#FFFFDD',isCore:true,gravity:0});
+    // === IMPACT: Core flash — always reserved (squeeze room by retiring oldest non-core particle) ===
+    if (explosions.length >= MAX_PARTICLES) {
+        var roomMade = false;
+        for (var ri = 0; ri < explosions.length; ri++) {
+            if (!explosions[ri].isCore) { explosions.splice(ri, 1); roomMade = true; break; }
+        }
+        if (!roomMade) return;
     }
-    // 0-1 debris
-    if (scale >= 1.5 && explosions.length < 100) {
-        explosions.push({x:x,y:y,vx:(Math.random()-0.5)*2*sc,vy:(Math.random()-0.5)*2*sc,size:(1+Math.random())*sc,life:1.0,decay:0.04,color:'#888',isDebris:true,rotSpeed:0.1,angle:Math.random()*Math.PI*2,gravity:0.1});
+    {
+        var coreSize = scale >= 1.5 ? 4 * sc : (1.5 + scale * 1.2);
+        explosions.push({x:x,y:y,vx:0,vy:0,size:coreSize,life:1.0,decay: scale >= 1.5 ? 0.18 : 0.22,color: scale >= 2 ? '#FFFFDD' : '#FFEEC8',isCore:true,gravity:0});
     }
-    // Minimal smoke ring — ONLY if scale >= 2 and not overloaded
-    if (!overloaded && scale >= 2) {
-        var smokeCount = Math.floor(4 * sc);
-        for (var i = 0; i < smokeCount; i++) {
-            var angle = Math.random() * Math.PI * 2;
-            var speed = 0.2 + Math.random() * 0.5 * sc;
-            explosions.push({x:x,y:y,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,life:1.0,decay:0.02,size:2+Math.random()*2*sc,color:'#555',isSmoke:true,type:'smoke',gravity:0.02});
+    // === IMPACT: Debris — minimum 2 fragments even under overload (was 1, felt muted) ===
+    if (explosions.length < MAX_PARTICLES - 6) {
+        var debrisCount = scale >= 1.5 ? Math.floor(2 + sc * 2) : (overloaded ? 2 : 3);
+        debrisCount = Math.min(debrisCount, scale >= 3 ? 6 : 4);
+        for (var di = 0; di < debrisCount; di++) {
+            var dAng = Math.random() * Math.PI * 2;
+            var dSpd = (0.6 + Math.random() * 1.4) * sc * (scale >= 2 ? 1.2 : 0.7);
+            explosions.push({x:x,y:y,vx:Math.cos(dAng)*dSpd,vy:Math.sin(dAng)*dSpd,size: (1 + Math.random()) * Math.max(0.6, sc * 0.9),life:1.0,decay:0.04,color: Math.random() < 0.5 ? '#888' : '#666',isDebris:true,rotSpeed:0.1,angle:Math.random()*Math.PI*2,gravity:0.1});
         }
     }
-    // Minimal fireball — 2-4 particles
+    // === IMPACT: Smoke puff — at least 1 wisp always shown (was blocked on overload → muted feel) ===
+    if (explosions.length < MAX_PARTICLES - 4) {
+        var smokeCount = overloaded ? 1 : (scale >= 1.5 ? Math.floor(4 * sc) : (scale >= 0.5 ? 2 : 1));
+        for (var si = 0; si < smokeCount; si++) {
+            var sAng = Math.random() * Math.PI * 2;
+            var sSpd = 0.2 + Math.random() * 0.5 * sc;
+            explosions.push({x:x,y:y,vx:Math.cos(sAng)*sSpd,vy:Math.sin(sAng)*sSpd,life:1.0,decay:0.02,size:2+Math.random()*2*sc,color: scale >= 1.5 ? '#555' : '#666',isSmoke:true,type:'smoke',gravity:0.02});
+        }
+    }
+    // === Fireball (2-4 particles at small scale, scaled up at large) ===
     var fireCount = overloaded ? 2 : Math.floor(3 + scale * 2.5);
-    for (var i = 0; i < fireCount; i++) {
-        var angle = Math.random() * Math.PI * 2;
-        var speed = 0.8 + Math.random() * 1.2 * sc;
-        explosions.push({x:x,y:y,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,life:1.0,decay:0.04,size:1.5+Math.random()*2.5*sc,color:COLORS.explosion[Math.floor(Math.random()*3)],type:'fire',gravity:0});
+    fireCount = Math.min(fireCount, 8);
+    for (var fi = 0; fi < fireCount; fi++) {
+        var fAng = Math.random() * Math.PI * 2;
+        var fSpd = 0.8 + Math.random() * 1.2 * sc;
+        explosions.push({x:x,y:y,vx:Math.cos(fAng)*fSpd,vy:Math.sin(fAng)*fSpd,life:1.0,decay:0.04,size:1.5+Math.random()*2.5*sc,color:COLORS.explosion[Math.floor(Math.random()*3)],type:'fire',gravity:0});
     }
-    // Sparks — only for scale >= 2
-    if (scale >= 2 && explosions.length < 80) {
-        for (var i = 0; i < 3; i++) {
-            var angle = Math.random() * Math.PI * 2;
-            var speed = 0.5 + Math.random() * 0.5 * sc;
-            explosions.push({x:x,y:y,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,life:1.0,decay:0.05,size:1+Math.random()*2*sc,color:'#FFFFFF',type:'spark',gravity:0});
+    // === Sparks — for scale >= 1.5 (sparks visible from mid-scale up) ===
+    if (scale >= 1.5 && explosions.length < MAX_PARTICLES - 5) {
+        for (var ki = 0; ki < (scale >= 2 ? 3 : 2); ki++) {
+            var kAng = Math.random() * Math.PI * 2;
+            var kSpd = 0.5 + Math.random() * 0.5 * sc;
+            explosions.push({x:x,y:y,vx:Math.cos(kAng)*kSpd,vy:Math.sin(kAng)*kSpd,life:1.0,decay:0.05,size:1+Math.random()*2*sc,color:'#FFFFFF',type:'spark',gravity:0});
         }
     }
-    // Shockwave — only for scale >= 2.5
-    if (scale >= 2.5 && explosions.length < 70) {
+    // === Shockwave — at scale >= 2 ===
+    if (scale >= 2 && explosions.length < MAX_PARTICLES - 2) {
         explosions.push({x:x,y:y,vx:0,vy:0,life:1.0,decay:0.07,size:0,maxSize:20*sc,color:'rgba(255,200,80,0.6)',type:'shockwave',gravity:0});
     }
-    // Minimal screen shake
+    // === Screen shake feedback ===
     if (scale >= 2) {
         screenShake = Math.max(screenShake, 4);
         screenShakeIntensity = Math.max(screenShakeIntensity, 2);
+    } else if (scale >= 0.7) {
+        // Light feedback for small-scale (mook kills, laser kills)
+        screenShake = Math.max(screenShake, 2);
     }
 }
 function checkCollision(a, b) {
@@ -1426,6 +2018,25 @@ function playerHit() {
         player.invincibleTimer = 90;
         return;
     }
+    // === DRONE SHIELD: drones absorb hits in place of the player ===
+    if (drones.length > 0) {
+        // Consume the closest drone to the impact point (or last drone)
+        const consumedIdx = drones.length - 1;
+        const d = drones[consumedIdx];
+        if (d) {
+            // Small explosion where the drone was
+            createExplosion(d.x, d.y, 0.8);
+            createHitSpark(d.x, d.y, 0.6);
+            // Small screen shake for feedback
+            screenShake = Math.max(screenShake, 4);
+            screenShakeIntensity = Math.max(screenShakeIntensity, 2);
+        }
+        drones.splice(consumedIdx, 1);
+        // Brief invincibility frames so the player isn't chain-hit
+        player.invincible = true;
+        player.invincibleTimer = 60;
+        return;
+    }
     // === PERF: Ultra-minimal explosion for playable framerate ===
     var px = player.x, py = player.y;
     createExplosion(px, py, 1.2);
@@ -1453,7 +2064,36 @@ function playerHit() {
     if (typeof playExplosionSound === 'function') playExplosionSound();
     player.lives--;
     if (player.lives <= 0) {
-        gameOver();
+        // === FINAL DEATH: huge multi-layer explosion + screen flash + slow-mo ===
+        var dpx = player.x, dpy = player.y;
+        createMassiveExplosion(dpx, dpy, 1.5);
+        createExplosion(dpx, dpy, 3.0);
+        // Large fireball burst
+        for (var fi = 0; fi < 30; fi++) {
+            var fAng = Math.random() * Math.PI * 2;
+            var fSpd = 2 + Math.random() * 4;
+            explosions.push({x:dpx, y:dpy, vx:Math.cos(fAng)*fSpd, vy:Math.sin(fAng)*fSpd, life:1.0, decay:0.025, size:3+Math.random()*5, color:COLORS.explosion[Math.floor(Math.random()*3)], type:'fire', gravity:0});
+        }
+        // Large debris burst
+        for (var di = 0; di < 14; di++) {
+            var dAng = Math.random() * Math.PI * 2;
+            var dSpd = 1.5 + Math.random() * 3;
+            explosions.push({x:dpx, y:dpy, vx:Math.cos(dAng)*dSpd, vy:Math.sin(dAng)*dSpd, size:(2+Math.random()*2), life:1.0, decay:0.03, color:'#888', isDebris:true, rotSpeed:0.1, angle:Math.random()*Math.PI*2, gravity:0.15});
+        }
+        // Multi-shockwave
+        for (var sw = 0; sw < 2; sw++) {
+            explosions.push({x:dpx, y:dpy, vx:0, vy:0, life:1.0, decay:0.04, size:0, maxSize:100 + sw*30, color:'rgba(255,180,80,0.6)', type:'shockwave', gravity:0});
+        }
+        // White flash
+        deathFlashAlpha = 0.85;
+        screenShake = Math.max(screenShake, 22);
+        screenShakeIntensity = Math.max(screenShakeIntensity, 7);
+        if (typeof playExplosionSound === 'function') playExplosionSound();
+        // Start slow-mo, then game-over after it ends
+        startSlowMo(110, 0.3);
+        deathActive = true;
+        deathTimer = 110; // longer than slow-mo so game-over triggers when slow-mo ends
+        player.visible = false;
     } else {
         deathActive = true;
         deathTimer = 120;
@@ -1529,17 +2169,85 @@ function respawnPlayer() {
 function update() {
     if (gameState !== GameState.PLAYING) return;
 
-    
+    // PERF: toggle performance mode based on total visible entities.
+    // Hysteresis prevents rapid on/off flicker when count hovers near threshold.
+    {
+        // (droneMissiles may not exist in all builds — guard to be safe)
+const _droneMissiles = (typeof droneMissiles !== 'undefined' && droneMissiles) ? droneMissiles : [];
+const _effects = (typeof effects !== 'undefined' && effects) ? effects : [];
+const entityCount = enemies.length + enemyBullets.length + playerBullets.length +
+                            droneBullets.length + _droneMissiles.length +
+                            explosions.length + _effects.length + powerups.length;
+        if (!perfMode && entityCount > PERF_MODE_THRESHOLD) {
+            perfMode = true;
+        } else if (perfMode && entityCount < PERF_MODE_THRESHOLD - PERF_MODE_HYSTERESIS) {
+            perfMode = false;
+        }
+    }
+
     // frameCount already incremented in gameLoop
     // stageTimer is incremented above
-    
+
+    // === FINAL BOSS INTRO (2026-09): tick every frame so the siren→escort→spawn
+    //     state machine advances even when spawnEnemy() is throttled by spawnRate.
+    //     (Previously updateBossIntro() only ran inside spawnEnemy(), which was
+    //      called every 12-75 frames — the siren could take 2 minutes to end.)
+    if (bossActive && bossIntroPhase && bossIntroPhase !== 'spawn') {
+        updateBossIntro();
+    }
+
+    // === SLOW-MOTION UPDATE: lerp time scale 1.0 → maxScale → 1.0 ===
+    if (slowMoTimer > 0) {
+        // Determine phase by remaining time. Total = slowMoTimer + (elapsed in this call).
+        // We approximate: elapsed frames = slowMoFade + slowMoFadeOut + middle.
+        // Use simple curve: first 8 frames fade in, last 60 frames fade out, middle stays at max.
+        const elapsedFromEnd = 0; // tracks time since startSlowMo
+        const totalDuration = 120;
+        const elapsed = totalDuration - slowMoTimer;
+        if (elapsed < slowMoFade) {
+            // Fade-in
+            timeScale = 1.0 - (1.0 - slowMoMaxScale) * (elapsed / slowMoFade);
+        } else if (elapsed > totalDuration - slowMoFadeOut) {
+            // Fade-out
+            const fadeProgress = (elapsed - (totalDuration - slowMoFadeOut)) / slowMoFadeOut;
+            timeScale = slowMoMaxScale + (1.0 - slowMoMaxScale) * fadeProgress;
+        } else {
+            timeScale = slowMoMaxScale;
+        }
+        slowMoTimer--;
+        if (slowMoTimer <= 0) {
+            slowMoTimer = 0;
+            timeScale = 1.0;
+        }
+    } else {
+        timeScale = 1.0;
+    }
+
+    // === SLOW-MO GAMEPLAY EFFECT: skip in-game entity updates when slowed ===
+    // Visual effects (cascade, shake, flash, particles) keep rendering at full framerate,
+    // but enemy/bullet positions are frozen so the dying moment feels frozen in time.
+    const slowMoActive = timeScale < 0.95;
+    if (slowMoActive) {
+        // Determine which frames to actually tick entity movement. With slowMoFactor ~0.35,
+        // we skip ~65% of frames to keep motion at slowed pace while staying smooth.
+        if (Math.random() > timeScale) {
+            // Skip enemy movement + AI + shooting this frame
+            // but keep player input, dying timers, and visual effects ticking
+        }
+    }
+
     // Stage/Sub-wave progression - hyperspace check FIRST
     if (hyperspaceActive) {
         updateHyperspace();
         return; // Skip all gameplay updates during hyperspace
     }
-    
+
     stageTimer++;
+
+    // Wave announce text countdown (visual only, no gameplay effect)
+    if (waveAnnounceTimer > 0) {
+        waveAnnounceTimer--;
+    }
 
     // HYPERSPACE TRIGGER: Check BEFORE stageWave overflow resets bossDefeated
     if (bossDefeated && !hyperspaceActive && !deathActive) {
@@ -1547,16 +2255,27 @@ function update() {
         return; // Skip rest of frame - hyperspace jump started
     }
     
-    // Stage wave progression (70% of original time)
+    // Stage wave progression — each sub-wave lasts exactly 25s (1500 frames)
     if (stageTimer > STAGE_WAVE_DURATION) {
         stageWave++;
+        // Hard cap: never let stageWave exceed STAGE_WAVES (fixes 16-wave overshoot bug)
+        if (stageWave > STAGE_WAVES) stageWave = STAGE_WAVES;
         stageTimer = 0;
         bossDefeated = false;
         bossSpawned = false;
-        wave = currentStage * 10 + stageWave; // keep legacy wave roughly in sync // keep legacy wave roughly in sync
+        wave = currentStage * STAGE_WAVES + stageWave; // keep legacy wave roughly in sync (STAGE_WAVES sub-waves per stage)
         generatePlanetSet(currentPlanetIndex);
-        // Rapid enemy respawn after wave increase
-        spawnBoost = 60;
+        // Rapid enemy respawn after wave increase — keeps spawns continuous, no gap
+        spawnBoost = 90;
+        // Show wave announce text for ~1.5s
+        waveAnnounceText = 'WAVE ' + stageWave + ' / ' + STAGE_WAVES;
+        waveAnnounceTimer = WAVE_FLASH_DURATION;
+        // Force-spawn one enemy immediately so the screen is never empty between waves
+        if (gameState === GameState.PLAYING && !hyperspaceActive && !deathActive) {
+            spawnEnemy();
+            lastSpawnFrame = frameCount;
+            noSpawnCounter = 0;
+        }
     }
     
     // === FORCE BOSS SPAWN if stageWave has passed the boss wave ===
@@ -1632,24 +2351,25 @@ function update() {
         return;
     }
     
-    // Player movement (keyboard)
+    // Player movement (keyboard) — slowed during cinematic slow-mo
+    const playerSpeedScale = slowMoActive ? timeScale : 1.0;
     if (keys['ArrowLeft'] || keys['KeyA']) {
-        player.x -= player.speed;
+        player.x -= player.speed * playerSpeedScale;
     }
     if (keys['ArrowRight'] || keys['KeyD']) {
-        player.x += player.speed;
+        player.x += player.speed * playerSpeedScale;
     }
     if (keys['ArrowUp'] || keys['KeyW']) {
-        player.y -= player.speed;
+        player.y -= player.speed * playerSpeedScale;
     }
     if (keys['ArrowDown'] || keys['KeyS']) {
-        player.y += player.speed;
+        player.y += player.speed * playerSpeedScale;
     }
-    
-    // Player movement (joystick)
+
+    // Player movement (joystick) — also slowed during slow-mo
     if (joystickActive) {
-        player.x += joystickDX * player.speed;
-        player.y += joystickDY * player.speed;
+        player.x += joystickDX * player.speed * playerSpeedScale;
+        player.y += joystickDY * player.speed * playerSpeedScale;
     }
     
     // Old touch target movement removed - using Wing Fighter style
@@ -1899,51 +2619,103 @@ function update() {
         }
     }
     
-    // Update laser beams - each beam targets different enemies
+    // Update laser beams — balanced: range-limited, low active-beam cap, slower ticks
     if (laserBeams.length > 0) {
-        // Sort enemies by distance from player (closest first)
-        const sortedEnemies = [...enemies].sort((a, b) => {
+        // 1) Range-limited target list — enemies must be on-screen and not too far above the player.
+        //    Enemies spawned at the top (not yet entering the engagement zone) are excluded.
+        const eligibleEnemies = [];
+        for (let ei = 0; ei < enemies.length; ei++) {
+            const e = enemies[ei];
+            const dx = e.x - player.x;
+            const dy = e.y - player.y;
+            // Must be: at or below the engagement line (not above), within horizontal range
+            if (dy <= LASER_RANGE_Y && Math.abs(dx) <= LASER_RANGE_X) {
+                eligibleEnemies.push(e);
+            }
+        }
+        // Sort closest-first
+        eligibleEnemies.sort((a, b) => {
             const da = Math.hypot(a.x - player.x, a.y - player.y);
             const db = Math.hypot(b.x - player.x, b.y - player.y);
             return da - db;
         });
-        
-        const damagePerTick = player.vPowerActive ? 1.14 : 0.76;  // per-beam damage (+30% boost, +50% with V power)
-        const tickInterval = 16;     // frames between ticks
-        
+        // Cap distinct targets so high levels don't lock the entire screen
+        const targetPool = eligibleEnemies.slice(0, LASER_MAX_TARGETS);
+
+        // Damage grows modestly per level (single-target focus), not per beam
+        const damagePerTick = (LASER_DAMAGE_BASE + laserLevel * LASER_DAMAGE_PER_LEVEL) * (player.vPowerActive ? 1.5 : 1.0);
+        const tickInterval = LASER_TICK_INTERVAL;
+
+        // Cap active beams — extra slots just sit idle this frame.
+        const activeBeamCount = Math.min(laserBeams.length, LASER_ACTIVE_BEAM_CAP);
+
         // Converted from forEach to for (reverse for safe splice)
         for (let beamIdx = laserBeams.length - 1; beamIdx >= 0; beamIdx--) {
             const beam = laserBeams[beamIdx];
-            // Assign target: round-robin through sorted enemies
-            if (sortedEnemies.length > 0) {
-                const enemyIdx = beamIdx % sortedEnemies.length;
-                const target = sortedEnemies[enemyIdx];
-                beam.targetX = target.x;
-                beam.targetY = target.y;
-                beam.targetEnemy = target;
+            // Idle slots: clear target and skip damage
+            if (beamIdx >= activeBeamCount) {
+                beam.targetEnemy = null;
+                continue;
+            }
+            // Assign target: round-robin through the capped target pool
+            if (targetPool.length > 0) {
+                const enemyIdx = beamIdx % targetPool.length;
+                let target = targetPool[enemyIdx];
+                // === DYING GUARD: skip dying enemies; pick next live target if available ===
+                if (target && target.dying) {
+                    let swapTarget = null;
+                    for (let ti = 0; ti < targetPool.length; ti++) {
+                        if (ti === enemyIdx) continue;
+                        const cand = targetPool[ti];
+                        if (cand && !cand.dying) { swapTarget = cand; break; }
+                    }
+                    if (!swapTarget) target = null;
+                    else target = swapTarget;
+                }
+                if (target) {
+                    beam.targetX = target.x;
+                    beam.targetY = target.y;
+                    beam.targetEnemy = target;
+                } else {
+                    beam.targetEnemy = null;
+                }
             } else {
                 beam.targetEnemy = null;
             }
-            
+
             // Damage tick
             beam.tickTimer = (beam.tickTimer || 0) + 1;
             if (beam.tickTimer >= tickInterval) {
                 beam.tickTimer = 0;
                 
-                if (beam.targetEnemy && enemies.includes(beam.targetEnemy)) {
+                if (beam.targetEnemy && enemies.includes(beam.targetEnemy) && !beam.targetEnemy.dying) {
                     const enemy = beam.targetEnemy;
+                    // === B-52 STAGE BOSS: wings invulnerable. Skip damage if beam strikes only wings. ===
+                    if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
+                        const hb = enemy.hitboxBody;
+                        const ht = enemy.hitboxTail;
+                        const eRelX = beam.targetX - enemy.x;
+                        const eRelY = beam.targetY - enemy.y;
+                        const inBody = Math.abs(eRelX - hb.xOff) < hb.halfW && Math.abs(eRelY - hb.yOff) < hb.halfH;
+                        const inTail = Math.abs(eRelX - ht.xOff) < ht.halfW && Math.abs(eRelY - ht.yOff) < ht.halfH;
+                        if (!inBody && !inTail) {
+                            // Laser hits wing only — no damage, faint wing-edge spark
+                            createHitSpark(beam.targetX, beam.targetY, 0.15);
+                            continue;
+                        }
+                    }
                     enemy.hp -= damagePerTick;
                     hitMarkers.push({ x: enemy.x + (Math.random() - 0.5) * 20, y: enemy.y, timer: 12 });
                     
-                    if (enemy.hp <= 0) {
+                    if (enemy.hp <= 0 && !enemy.dying) {
                         score += enemy.score;
                         comboCount++;
                         if (comboCount > maxCombo) maxCombo = comboCount;
                         comboTimer = 90;
                         if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
-                        createHitSpark(enemy.x, enemy.y, 0.3);
+                        createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
-                            // Boss defeated - spawn V powerup
+                            // Boss defeated - spawn V powerup (one-shot reward)
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
                             if (bossIsFinalBoss) {
@@ -1951,19 +2723,40 @@ function update() {
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
                                 createMassiveExplosion(enemy.x, enemy.y, 1.5);
-                                    deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
-                                    screenShake = 10; screenShakeIntensity = 3;
+                                deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
+                                screenShake = 10; screenShakeIntensity = 3;
+                                // === Multi-step cascade: queue final boss dying (handled by its own dying block) ===
+                                enemy.dying = true;
+                                enemy.dyingTimer = 0;
+                                enemy.dyingCascade = 0;
+                                enemy.cascadeBaseX = enemy.x;
+                                enemy.cascadeBaseY = enemy.y;
+                                beam.targetEnemy = null;
+                                continue; // skip splice — boss handled by dying block
                             } else {
                                 screenShake = Math.max(screenShake, 7); screenShakeIntensity = 2;
                             }
                             bossDefeated = true;
                             player.lives = Math.min(5, player.lives + 1);
                             bossClaws = [];
+                        } else if (enemy.isMidBoss && enemy.type === 'heavyBomber') {
+                            // Mid-boss falling sequence (one-shot)
+                            enemy.dying = true;
+                            enemy.dyingTimer = 0;
+                            enemy.shootCooldown = 9999;
+                            enemy.fallRot = 0;
+                            enemy.fallVy = 1.5;
+                            enemy.fallVx = (Math.random() - 0.5) * 0.4;
+                            createExplosion(enemy.x, enemy.y, 1.5);
+                            beam.targetEnemy = null;
+                            continue;
                         } else {
                             spawnPowerup(enemy.x, enemy.y);
                         }
-                        const idx = enemies.indexOf(enemy);
-                        if (idx >= 0) enemies.splice(idx, 1);
+                        if (!enemy.dying) {
+                            const idx = enemies.indexOf(enemy);
+                            if (idx >= 0) enemies.splice(idx, 1);
+                        }
                         beam.targetEnemy = null;
                     }
                 }
@@ -1976,10 +2769,46 @@ function update() {
         stopLaserSound();
     }
 
+    // === ENEMY DEATH HANDLER (centralized impact destruction / dying-fall) ===
+    // Called by all collision paths. Handles score, combo, heavyBomber dying-fall,
+    // and final-boss death cascade. Returns true if the enemy was destroyed/queued.
+    function killOrFallEnemy(enemy, ei) {
+        if (!enemy) return false;
+        // Final boss — multi-step cascade (no immediate splice)
+        if (enemy.isWaveBoss && enemy.type === 'final') {
+            if (enemy.dying) return true; // already dying
+            enemy.dying = true;
+            enemy.dyingTimer = 0;
+            enemy.dyingCascade = 0; // chain step counter
+            // Save center for cascade explosion positions
+            enemy.cascadeBaseX = enemy.x;
+            enemy.cascadeBaseY = enemy.y;
+            return true;
+        }
+        // Mid-boss heavyBomber — dying-fall for ~1.5s before big explosion
+        if (enemy.type === 'heavyBomber' && enemy.isMidBoss) {
+            if (enemy.dying) return true;
+            enemy.dying = true;
+            enemy.dyingTimer = 0;
+            enemy.shootCooldown = 9999;
+            enemy.fallRot = enemy._fallRot || 0;
+            enemy.fallVy = 1.5;
+            enemy.fallVx = (Math.random() - 0.5) * 0.4;
+            // Disable collision by flagging no AI fire / no hit processing
+            return true;
+        }
+        // Mook — immediate destruction (small particles still spawn)
+        return false; // not dying — caller does normal splice
+    }
+
     // Update player bullets
     // Converted from forEach to for (reverse for safe splice)
     for (let i = playerBullets.length - 1; i >= 0; i--) {
         const bullet = playerBullets[i];
+        // === SLOW-MO: skip bullet motion for slowed frames ===
+        if (slowMoActive && Math.random() > timeScale) {
+            continue;
+        }
         bullet.y -= bullet.speed;
         if (bullet.angle) {
             bullet.x += Math.sin(bullet.angle) * bullet.speed;
@@ -1993,8 +2822,37 @@ function update() {
     // Converted from forEach to for (reverse for safe splice)
     for (let i = enemyBullets.length - 1; i >= 0; i--) {
         const bullet = enemyBullets[i];
-        bullet.y += bullet.speed;
-        if (bullet.y > GAME_HEIGHT + 20) {
+        // === SLOW-MO: skip bullet motion for slowed frames ===
+        if (slowMoActive && Math.random() > timeScale) {
+            continue;
+        }
+        if (bullet.isHoming) {
+            // Homing missile: turn toward player and self-destruct after homingLife
+            bullet.homingLife--;
+            if (bullet.homingLife <= 0 || !player || player.lives <= 0) {
+                createHitSpark(bullet.x, bullet.y, 0.4);
+                enemyBullets.splice(i, 1);
+                continue;
+            }
+            const dx = player.x - bullet.x;
+            const dy = player.y - bullet.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+            // Desired direction
+            const desVx = (dx / dist) * bullet.speed;
+            const desVy = (dy / dist) * bullet.speed;
+            // Turn rate limited (smooth homing)
+            const turnRate = bullet.homingTurnRate || 0.06;
+            bullet.vx += (desVx - bullet.vx) * turnRate;
+            bullet.vy += (desVy - bullet.vy) * turnRate;
+            bullet.x += bullet.vx;
+            bullet.y += bullet.vy;
+            bullet.angle = Math.atan2(bullet.vy, bullet.vx) + Math.PI / 2;
+        } else {
+            bullet.y += bullet.speed;
+        }
+        if (bullet.y > GAME_HEIGHT + 20 || bullet.y < -50) {
+            enemyBullets.splice(i, 1);
+        } else if (bullet.x < -50 || bullet.x > GAME_WIDTH + 50) {
             enemyBullets.splice(i, 1);
         }
     }
@@ -2003,8 +2861,31 @@ function update() {
     // Converted from forEach to for (reverse for safe splice)
     for (let ei = enemies.length - 1; ei >= 0; ei--) {
         const enemy = enemies[ei];
+        // === DYING-ONLY: dying mid-bosses (heavyBomber) and final boss cascade
+        // are handled entirely by their own dying blocks inside the case branches.
+        // We MUST still fall into the switch (do NOT continue) so case 'heavyBomber'
+        // and case 'final' dying blocks actually run each frame. The case blocks
+        // themselves `break` out when done, so a single pass handles the dying tick.
+        if (enemy.dying) {
+            // slow-mo skip still applies — only the cinematic dying animations
+            // (case 'heavyBomber' / case 'final') should keep running during slow-mo
+            // and they ignore timeScale internally by design.
+        }
+        // === SLOW-MO: skip normal AI/movement updates for slowed frames ===
+        // Dying animations and final boss cascade continue regardless (cinematic freeze).
+        // Dying enemies must NOT be skipped — they need their per-frame fall/cascade ticks.
+        if (!enemy.dying && slowMoActive && Math.random() > timeScale) {
+            continue;
+        }
         enemy.phase += 0.05;
-        
+
+        // === Boss escort enemies are updated by updateBossIntro (sway + descent).
+        // Skip the regular enemy update block so their motion stays smooth and
+        // their `shootCooldown = 99999` guarantee is never overridden.
+        if (enemy.isBossEscort) {
+            continue;
+        }
+
         switch (enemy.type) {
             case 'scout':
                 enemy.y += enemy.speed;
@@ -2021,8 +2902,8 @@ function update() {
                         enemyBullets.push({
                             x: enemy.x,
                             y: enemy.y + enemy.height / 2,
-                            width: 10,
-                            height: 10,
+                            width: 28,
+                            height: 28,
                             speed: 1.28 // +60% from 0.8 (was 0.5)
                         });
                         enemy.shootCooldown = 160;
@@ -2039,62 +2920,580 @@ function update() {
                     enemy.x += (rdx / rdist) * enemy.speed * 0.72;
                 }
                 break;
-            case 'boss':
+            case 'final':
+                // === FINAL BOSS DESTRUCTION ===
+                // Phase A (frame 0): initial smoke burst from fuselage + BOTH WINGS BREAK OFF
+                //   - Left/right wings detach, become independent rotating debris with gravity
+                //   - Pick drift direction toward the screen edge nearest the boss's death spot
+                // Phase B (frames 1..~300): fuselage drifts toward that edge, trailing thick black smoke
+                //   - Random small pops along the body
+                //   - Body tilts more steeply as it falls
+                // Phase C (frame ~300 OR body off-screen): final massive explosion + hyperspace
+                if (enemy.dying) {
+                    enemy.dyingTimer++;
+                    const baseX = enemy.cascadeBaseX || enemy.x;
+                    const baseY = enemy.cascadeBaseY || enemy.y;
+
+                    // === Phase A (frame 0): initial burst + detach wings ===
+                    if (enemy.dyingTimer === 1) {
+                        // Big initial smoke + spark burst from fuselage (MUCH bigger than before)
+                        createMassiveExplosion(baseX, baseY, 2.6);
+                        createExplosion(baseX, baseY, 3.6);
+                        // Thick black smoke — initial plume (doubled count, larger)
+                        for (let si = 0; si < 18; si++) {
+                            explosions.push({
+                                x: baseX + (Math.random() - 0.5) * 50,
+                                y: baseY + (Math.random() - 0.5) * 20,
+                                vx: (Math.random() - 0.5) * 1.4,
+                                vy: -0.6 + Math.random() * 0.8,
+                                life: 1.0, decay: 0.012,
+                                size: 12 + Math.random() * 10,
+                                color: '#1A1A1A', isSmoke: true, type: 'smoke', gravity: 0.03
+                            });
+                        }
+                        // Fire sparks (more, brighter)
+                        for (let fi = 0; fi < 26; fi++) {
+                            const a = Math.random() * Math.PI * 2;
+                            const sp = 2.0 + Math.random() * 3.5;
+                            explosions.push({
+                                x: baseX, y: baseY,
+                                vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                                life: 1.0, decay: 0.025,
+                                size: 3 + Math.random() * 4,
+                                color: COLORS.explosion[Math.floor(Math.random() * 3)],
+                                type: 'fire', gravity: 0
+                            });
+                        }
+                        // Strong central shockwave at fuselage
+                        explosions.push({
+                            x: baseX, y: baseY, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.035, size: 0, maxSize: 180,
+                            color: 'rgba(255,200,90,0.85)', type: 'shockwave', gravity: 0
+                        });
+                        explosions.push({
+                            x: baseX, y: baseY, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.025, size: 0, maxSize: 260,
+                            color: 'rgba(255,160,80,0.6)', type: 'shockwave', gravity: 0
+                        });
+
+                        // Decide drift direction toward nearest screen edge (left or right corner)
+                        // Use boss X position: if x < mid → drift to LEFT corner, else RIGHT corner
+                        const driftLeft = baseX < GAME_WIDTH / 2;
+                        enemy._dyingDriftLeft = driftLeft;
+                        enemy._dyingInitX = baseX;
+                        enemy._dyingInitY = baseY;
+                        // Give an immediate impulse so motion is visible from frame 1
+                        enemy._dyingVx = driftLeft ? -2.6 : 2.6;
+                        enemy._dyingVy = 0.4;
+
+                        // === Detach LEFT WING (bigger throw, faster rotation) ===
+                        bossWingDebris.push({
+                            x: baseX - 60,
+                            y: baseY + 5,
+                            vx: (driftLeft ? -2.6 : -1.0) + (Math.random() - 0.5) * 0.8,
+                            vy: 1.0 + Math.random() * 0.6,
+                            rotSpeed: (driftLeft ? -0.14 : -0.18) + (Math.random() - 0.5) * 0.04,
+                            angle: 0,
+                            side: 'left',
+                            life: 360,
+                            size: 56  // half-width of detached wing
+                        });
+                        // === Detach RIGHT WING ===
+                        bossWingDebris.push({
+                            x: baseX + 60,
+                            y: baseY + 5,
+                            vx: (driftLeft ? 1.0 : 2.6) + (Math.random() - 0.5) * 0.8,
+                            vy: 1.0 + Math.random() * 0.6,
+                            rotSpeed: (driftLeft ? 0.18 : 0.14) + (Math.random() - 0.5) * 0.04,
+                            angle: 0,
+                            side: 'right',
+                            life: 360,
+                            size: 56
+                        });
+
+                        // Bigger shockwave ring at each wing-break point
+                        explosions.push({
+                            x: baseX - 60, y: baseY + 5, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.04, size: 0, maxSize: 120,
+                            color: 'rgba(255,180,80,0.8)', type: 'shockwave', gravity: 0
+                        });
+                        explosions.push({
+                            x: baseX + 60, y: baseY + 5, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.04, size: 0, maxSize: 120,
+                            color: 'rgba(255,180,80,0.8)', type: 'shockwave', gravity: 0
+                        });
+                        // Extra wing-break sparks
+                        for (let wi = 0; wi < 10; wi++) {
+                            const a = Math.random() * Math.PI * 2;
+                            const sp = 1.5 + Math.random() * 2.5;
+                            explosions.push({
+                                x: baseX + (Math.random() < 0.5 ? -60 : 60),
+                                y: baseY + 5,
+                                vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                                life: 1.0, decay: 0.03,
+                                size: 2 + Math.random() * 2,
+                                color: COLORS.explosion[Math.floor(Math.random() * 3)],
+                                type: 'fire', gravity: 0
+                            });
+                        }
+
+                        // Screen shake + sound + slow-mo for cinematic impact (stronger)
+                        deathFlashAlpha = Math.max(deathFlashAlpha, 0.85);
+                        screenShake = Math.max(screenShake, 22);
+                        screenShakeIntensity = Math.max(screenShakeIntensity, 7);
+                        if (typeof playExplosionSound === 'function') playExplosionSound();
+                        startSlowMo(120, 0.35);
+                        break;
+                    }
+
+                    // === Phase B (frames 2..until off-screen): fuselage drifts toward corner ===
+                    // Drive with explicit velocity so motion is dramatic & predictable
+                    {
+                        const driftLeft = enemy._dyingDriftLeft;
+                        // Horizontal: gentle continuous accel so the body really travels
+                        // to the edge of the screen (not just slides a few pixels)
+                        enemy._dyingVx += driftLeft ? -0.055 : 0.055;
+                        if (enemy._dyingVx > 5.0) enemy._dyingVx = 5.0;
+                        if (enemy._dyingVx < -5.0) enemy._dyingVx = -5.0;
+                        // Vertical: light gravity so it "slowly" falls, not freefall
+                        enemy._dyingVy += 0.022;
+                        if (enemy._dyingVy > 3.2) enemy._dyingVy = 3.2;
+                        enemy.x += enemy._dyingVx;
+                        enemy.y += enemy._dyingVy;
+
+                        // Tilt body steeply toward the drift direction (faster so visible early)
+                        const targetTilt = driftLeft ? -1.3 : 1.3;  // ~75° toward corner
+                        enemy.angle += (targetTilt - enemy.angle) * 0.08;
+
+                        // End condition: off-screen either side OR y past bottom
+                        const offLeft = enemy.x < -120;
+                        const offRight = enemy.x > GAME_WIDTH + 120;
+                        const offBottom = enemy.y > GAME_HEIGHT + 80;
+                        enemy._dyingOffScreen = offLeft || offRight || offBottom;
+                        // Hard cap so it doesn't loop forever
+                        if (enemy.dyingTimer > 360) enemy._dyingOffScreen = true;
+
+                        // Sparse small pop every 18 frames (was every 10 — too dense, caused lag).
+                        // As the body fades out (last 30% of drift), skip pops entirely.
+                        if (enemy.dyingTimer % 18 === 0 && explosions.length < MAX_PARTICLES - 4) {
+                            const px = enemy.x + (Math.random() - 0.5) * 36;
+                            const py = enemy.y + (Math.random() - 0.5) * 14;
+                            createExplosion(px, py, 0.6);
+                        }
+                        // Subtle black smoke — every 4 frames (was 3 — slightly sparser for smoothness)
+                        if (enemy.dyingTimer % 4 === 0 && explosions.length < MAX_PARTICLES - 2) {
+                            explosions.push({
+                                x: enemy.x + (Math.random() - 0.5) * 28,
+                                y: enemy.y + (Math.random() - 0.5) * 14,
+                                vx: (Math.random() - 0.5) * 0.4 - (driftLeft ? 0.4 : -0.4),
+                                vy: -0.4 + Math.random() * 0.5,
+                                life: 1.0, decay: 0.016,
+                                size: 10 + Math.random() * 6,
+                                color: '#1A1A1A', isSmoke: true, type: 'smoke', gravity: 0.022
+                            });
+                            // Faint ember — only every 6 frames
+                            if (enemy.dyingTimer % 6 === 0 && explosions.length < MAX_PARTICLES - 3 && Math.random() < 0.6) {
+                                explosions.push({
+                                    x: enemy.x + (Math.random() - 0.5) * 16,
+                                    y: enemy.y,
+                                    vx: (Math.random() - 0.5) * 1.4,
+                                    vy: (Math.random() - 0.2) * 0.9,
+                                    life: 1.0, decay: 0.045,
+                                    size: 1.3 + Math.random() * 1.6,
+                                    color: '#FF6622', type: 'spark', gravity: 0.04
+                                });
+                            }
+                        }
+                        // Wait — fall through to final explosion when off-screen
+                    }
+                    // (no break — final-explosion block below handles cleanup)
+
+                    // === Phase C (body off-screen or 360+ frames): final explosion + hyperspace ===
+                    // Wait until Phase B reports the body has actually drifted off-screen
+                    // (or the hard 360-frame cap is reached). DO NOT trigger on the first
+                    // dying frame — that was prematurely ending the drift animation.
+                    if (!enemy._dyingOffScreen) {
+                        // Still drifting toward the corner — just keep animating
+                        break;
+                    }
+                    if (enemy._dyingFinalDone) {
+                        // Already triggered — keep entity around but inert until removed
+                        break;
+                    }
+                    enemy._dyingFinalDone = true;
+                    // === Phase C: NO final explosion, NO shockwaves, NO debris, NO flash, ===
+                    // === NO screen-shake, NO slow-mo. The fuselage and wings have already  ===
+                    // === faded out and drifted off-screen via the natural fade animation.   ===
+                    // === Just trigger the stage transition cleanly.                        ===
+                    // (Keeping playExplosionSound for audio feedback — does not cause lag)
+                    if (typeof playExplosionSound === 'function') playExplosionSound();
+
+                    // === Trigger hyperspace stage transition ===
+                    bossDefeated = true;
+                    player.lives = Math.min(5, player.lives + 1);
+                    bossClaws = [];
+                    // Clear remaining non-boss enemies for clean transition
+                    const remainingEnemies = enemies.filter(e => !e.isWaveBoss);
+                    for (let rc = 0; rc < remainingEnemies.length; rc++) {
+                        createHitSpark(remainingEnemies[rc].x, remainingEnemies[rc].y, 0.4);
+                    }
+                    enemies = enemies.filter(e => e.isWaveBoss);
+                    enemyBullets = [];
+                    playerBullets = [];
+                    droneBullets = [];
+                    missiles = [];
+                    octopusTentacles = [];
+                    hyperspaceActive = true;
+                    hyperspaceTimer = HYPERSPACE_TOTAL;
+                    hyperspacePhase = 0;
+
+                    // Remove this boss entity
+                    const idx = enemies.indexOf(enemy);
+                    if (idx >= 0) enemies.splice(idx, 1);
+                    // Let detached wings keep falling on their own (each has life=360)
+                    // They'll splice out via the wing-debris update loop.
+                    break;
+                }
+                // === B-52 STAGE BOSS ===
+                // Slow entry: glide in from top until y reaches 100
                 if (enemy.y < 100) {
                     enemy.y += enemy.speed;
                 } else {
-                    // Sweep left-right across full screen width
-                    // Use independent phase for slower movement (30% of original)
-                    enemy._movePhase = (enemy._movePhase || 0) + 0.0225;
-                    enemy.x += Math.sin(enemy._movePhase) * 1.5;
+                    // Lateral sweep across full screen width (slow, bomber-like)
+                    enemy._movePhase = (enemy._movePhase || 0) + 0.018;
+                    enemy.x += Math.sin(enemy._movePhase) * 1.3;
+
+                    // --- Pattern A: standard bullets from wing roots ---
                     enemy.shootCooldown--;
                     if (enemy.shootCooldown <= 0) {
-                        // 1-bullet shot (reduced from 2)
-                        enemyBullets.push({
-                            x: enemy.x,
-                            y: enemy.y + enemy.height / 2,
-                            width: 12,
-                            height: 12,
-                            speed: 1.6 // +60% from 1.0 (was 0.63)
-                        });
-                        enemy.shootCooldown = Math.max(90, 150 - currentStage * 5) + (bossIsFinalBoss ? 240 : 0); // final boss +2s interval
+                        // 2 bullets from left & right wing roots (just inside damageable body)
+                        const leftX = enemy.x - 50;
+                        const rightX = enemy.x + 50;
+                        const bY = enemy.y + enemy.height / 2 - 30;
+                        for (const bx of [leftX, rightX]) {
+                            enemyBullets.push({
+                                x: bx,
+                                y: bY,
+                                width: 32,
+                                height: 32,
+                                speed: 2.0 + currentStage * 0.18,
+                                color: '#FF4422'
+                            });
+                        }
+                        enemy.shootCooldown = Math.max(70, 130 - currentStage * 5);
+                    }
+
+                    // --- Pattern B: bomb-trail — drops a row of slow bombs ---
+                    // When bombTrailPhase == 0 (idle), count down bombTrailCooldown
+                    if (enemy.bombTrailPhase === 0) {
+                        enemy.bombTrailCooldown--;
+                        if (enemy.bombTrailCooldown <= 0) {
+                            enemy.bombTrailPhase = 1;            // start dropping
+                            enemy.bombTrailBulletsLeft = enemy.bombTrailBullets || 6;
+                            enemy.bombTrailTimer = 0;             // delay until first bomb
+                        }
+                    } else if (enemy.bombTrailPhase === 1) {
+                        // Drop one bomb every ~14 frames (~0.23s)
+                        enemy.bombTrailTimer++;
+                        if (enemy.bombTrailTimer >= 14) {
+                            enemy.bombTrailTimer = 0;
+                            // Drop bomb from slightly random X under the bomb bay
+                            const bombBayX = enemy.x + (Math.random() - 0.5) * 50;
+                            const bombBayY = enemy.y + enemy.height / 2 - 12;
+                            enemyBullets.push({
+                                x: bombBayX,
+                                y: bombBayY,
+                                width: 36,
+                                height: 44,
+                                speed: 1.2 + currentStage * 0.08, // slower than normal bullets (was 2.0+)
+                                color: '#FFAA22',
+                                isBomb: true,
+                                ownerType: 'finalBoss'
+                            });
+                            enemy.bombTrailBulletsLeft--;
+                            if (enemy.bombTrailBulletsLeft <= 0) {
+                                enemy.bombTrailPhase = 0;
+                                enemy.bombTrailCooldown = 240 + Math.floor(Math.random() * 60); // 4-5s gap before next trail
+                            }
+                        }
                     }
                 }
                 break;
-        case 'octopus':
-            // Alien octopus - stationary at top, attacks with tentacles only
-            // Use independent phase for slower movement (30% of original)
-            enemy._movePhase = (enemy._movePhase || 0) + 0.0159;
-            // Auto-remove after lifetime (30 sec = ~1800 frames) to prevent accumulation
+            case 'boss':
+                // legacy alias kept for safety (no longer spawned) — same as final
+                if (enemy.y < 100) {
+                    enemy.y += enemy.speed;
+                } else {
+                    enemy._movePhase = (enemy._movePhase || 0) + 0.018;
+                    enemy.x += Math.sin(enemy._movePhase) * 1.3;
+                    enemy.shootCooldown--;
+                    if (enemy.shootCooldown <= 0) {
+                        const leftX = enemy.x - 50;
+                        const rightX = enemy.x + 50;
+                        const bY = enemy.y + enemy.height / 2 - 30;
+                        for (const bx of [leftX, rightX]) {
+                            enemyBullets.push({
+                                x: bx, y: bY,
+                                width: 32, height: 32,
+                                speed: 2.0 + currentStage * 0.18,
+                                color: '#FF4422'
+                            });
+                        }
+                        enemy.shootCooldown = Math.max(70, 130 - currentStage * 5);
+                    }
+                }
+                break;
+        case 'heavyBomber':
+            // === HEAVY BOMBER DESTRUCTION (matches final-boss Phase A/B/C pattern) ===
+            // Phase A (frame 0): initial burst from fuselage + both wings break off
+            //   - Wings detach into bossWingDebris (same array as final-boss)
+            //   - Drift direction chosen from death-spot X (left vs right corner)
+            // Phase B (frames 1..until off-screen): fuselage slowly drifts toward corner
+            //   - Thick black smoke trail + frequent pops + steep tilt
+            // Phase C (off-screen OR 360-frame cap): final explosion + splice
+            if (enemy.dying) {
+                enemy.dyingTimer++;
+                const baseX = enemy.cascadeBaseX || enemy.x;
+                const baseY = enemy.cascadeBaseY || enemy.y;
+
+                // === Phase A (frames 1..3): initial burst + detach wings ===
+                // Spread across 3 frames so the impact is visually sustained (not a single-frame pop)
+                if (enemy.dyingTimer >= 1 && enemy.dyingTimer <= 3) {
+                    const phaseScale = enemy.dyingTimer === 1 ? 1.0 : (enemy.dyingTimer === 2 ? 0.6 : 0.35);
+                    // Big initial smoke + spark burst from fuselage
+                    if (enemy.dyingTimer === 1) {
+                        createMassiveExplosion(baseX, baseY, 2.5);
+                        createExplosion(baseX, baseY, 3.6);
+                    } else {
+                        createExplosion(baseX, baseY, 1.4 * phaseScale);
+                        createHitSpark(baseX, baseY, 0.8 * phaseScale);
+                    }
+                    // Thick black smoke — initial plume (denser on frame 1, then sustained)
+                    const smokeCount = enemy.dyingTimer === 1 ? 22 : 10;
+                    for (let si = 0; si < smokeCount; si++) {
+                        explosions.push({
+                            x: baseX + (Math.random() - 0.5) * 50,
+                            y: baseY + (Math.random() - 0.5) * 18,
+                            vx: (Math.random() - 0.5) * 1.6,
+                            vy: -0.7 + Math.random() * 0.8,
+                            life: 1.0, decay: 0.014,
+                            size: 11 + Math.random() * 9,
+                            color: '#1A1A1A', isSmoke: true, type: 'smoke', gravity: 0.025
+                        });
+                    }
+                    // Fire sparks — sustained across all 3 frames
+                    const sparkCount = enemy.dyingTimer === 1 ? 26 : 12;
+                    for (let fi = 0; fi < sparkCount; fi++) {
+                        const a = Math.random() * Math.PI * 2;
+                        const sp = 1.8 + Math.random() * 3.2;
+                        explosions.push({
+                            x: baseX, y: baseY,
+                            vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                            life: 1.0, decay: 0.028,
+                            size: 2 + Math.random() * 3,
+                            color: COLORS.explosion[Math.floor(Math.random() * 3)],
+                            type: 'fire', gravity: 0
+                        });
+                    }
+                    // Central shockwave (only frame 1 — large)
+                    if (enemy.dyingTimer === 1) {
+                        explosions.push({
+                            x: baseX, y: baseY, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.04, size: 0, maxSize: 150,
+                            color: 'rgba(255,200,90,0.8)', type: 'shockwave', gravity: 0
+                        });
+                        explosions.push({
+                            x: baseX, y: baseY, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.03, size: 0, maxSize: 200,
+                            color: 'rgba(255,160,80,0.55)', type: 'shockwave', gravity: 0
+                        });
+                    }
+
+                    // Decide drift direction toward nearest screen edge (only frame 1)
+                    if (enemy.dyingTimer === 1) {
+                        const driftLeft = baseX < GAME_WIDTH / 2;
+                        enemy._dyingDriftLeft = driftLeft;
+                        enemy._dyingInitX = baseX;
+                        enemy._dyingInitY = baseY;
+                        // Strong immediate impulse so motion is visibly large from frame 1
+                        enemy._dyingVx = driftLeft ? -3.0 : 3.0;
+                        enemy._dyingVy = 0.6;
+
+                        // === Detach LEFT WING (heavyBomber scale ≈ width 70 → wing half-width ~28) ===
+                        bossWingDebris.push({
+                            x: baseX - 30,
+                            y: baseY + 4,
+                            vx: (driftLeft ? -3.0 : -1.4) + (Math.random() - 0.5) * 0.8,
+                            vy: 1.2 + Math.random() * 0.7,
+                            rotSpeed: (driftLeft ? -0.20 : -0.24) + (Math.random() - 0.5) * 0.04,
+                            angle: 0,
+                            side: 'left',
+                            life: 360,
+                            size: 30  // half-width of detached wing
+                        });
+                        // === Detach RIGHT WING ===
+                        bossWingDebris.push({
+                            x: baseX + 30,
+                            y: baseY + 4,
+                            vx: (driftLeft ? 1.4 : 3.0) + (Math.random() - 0.5) * 0.8,
+                            vy: 1.2 + Math.random() * 0.7,
+                            rotSpeed: (driftLeft ? 0.24 : 0.20) + (Math.random() - 0.5) * 0.04,
+                            angle: 0,
+                            side: 'right',
+                            life: 360,
+                            size: 30
+                        });
+                        // Shockwave rings at each wing-break point
+                        explosions.push({
+                            x: baseX - 30, y: baseY + 4, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.05, size: 0, maxSize: 90,
+                            color: 'rgba(255,180,80,0.85)', type: 'shockwave', gravity: 0
+                        });
+                        explosions.push({
+                            x: baseX + 30, y: baseY + 4, vx: 0, vy: 0,
+                            life: 1.0, decay: 0.05, size: 0, maxSize: 90,
+                            color: 'rgba(255,180,80,0.85)', type: 'shockwave', gravity: 0
+                        });
+                        // Wing-break sparks
+                        for (let wi = 0; wi < 12; wi++) {
+                            const a = Math.random() * Math.PI * 2;
+                            const sp = 1.4 + Math.random() * 2.6;
+                            explosions.push({
+                                x: baseX + (Math.random() < 0.5 ? -30 : 30),
+                                y: baseY + 4,
+                                vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                                life: 1.0, decay: 0.035,
+                                size: 1.5 + Math.random() * 2,
+                                color: COLORS.explosion[Math.floor(Math.random() * 3)],
+                                type: 'fire', gravity: 0
+                            });
+                        }
+                        // Screen shake + sound + slow-mo (frame 1 only)
+                        deathFlashAlpha = Math.max(deathFlashAlpha, 0.85);
+                        screenShake = Math.max(screenShake, 22);
+                        screenShakeIntensity = Math.max(screenShakeIntensity, 8);
+                        if (typeof playExplosionSound === 'function') playExplosionSound();
+                        if (typeof startSlowMo === 'function') startSlowMo(140, 0.35);
+                    }
+                }
+
+                // === Phase B (frames 4..until off-screen): fuselage drifts toward corner ===
+                if (enemy.dyingTimer >= 4 && !enemy._dyingFinalDone) {
+                    const driftLeft = enemy._dyingDriftLeft;
+                    // Horizontal: continuous accel so it really travels to the edge
+                    enemy._dyingVx += driftLeft ? -0.060 : 0.060;
+                    if (enemy._dyingVx > 4.6) enemy._dyingVx = 4.6;
+                    if (enemy._dyingVx < -4.6) enemy._dyingVx = -4.6;
+                    // Vertical: light gravity — "slowly" falls
+                    enemy._dyingVy += 0.022;
+                    if (enemy._dyingVy > 3.0) enemy._dyingVy = 3.0;
+                    enemy.x += enemy._dyingVx;
+                    enemy.y += enemy._dyingVy;
+
+                    // Tilt body steeply toward drift direction (~75°)
+                    const targetTilt = driftLeft ? -1.3 : 1.3;
+                    enemy.angle += (targetTilt - enemy.angle) * 0.08;
+
+                    // End condition: off-screen, on-screen time cap, or hard cap
+                    const offLeft = enemy.x < -100;
+                    const offRight = enemy.x > GAME_WIDTH + 100;
+                    const offBottom = enemy.y > GAME_HEIGHT + 80;
+                    const _offScreen = offLeft || offRight || offBottom;
+                    // Trigger final explosion while still on-screen if it's drifted far
+                    // enough or after a shorter time cap (so user sees the boom!)
+                    const _onScreenCap = enemy.dyingTimer > 180 && (enemy.x < 80 || enemy.x > GAME_WIDTH - 80);
+                    const _timeCap = enemy.dyingTimer > 240;
+
+                    // Subtle drifting smoke — sparse, every 3 frames (NOT every frame) so screen doesn't lag
+                    if (enemy.dyingTimer % 3 === 0 && explosions.length < MAX_PARTICLES - 2) {
+                        explosions.push({
+                            x: enemy.x + (Math.random() - 0.5) * 24,
+                            y: enemy.y + (Math.random() - 0.5) * 12,
+                            vx: (Math.random() - 0.5) * 0.4 - (driftLeft ? 0.4 : -0.4),
+                            vy: -0.3 + Math.random() * 0.4,
+                            life: 1.0, decay: 0.018,
+                            size: 9 + Math.random() * 5,
+                            color: '#1A1A1A', isSmoke: true, type: 'smoke', gravity: 0.02
+                        });
+                    }
+                    // Faint ember — every 4 frames, single spark
+                    if (enemy.dyingTimer % 4 === 0 && explosions.length < MAX_PARTICLES - 2 && Math.random() < 0.5) {
+                        explosions.push({
+                            x: enemy.x + (Math.random() - 0.5) * 14,
+                            y: enemy.y,
+                            vx: (Math.random() - 0.5) * 1.2,
+                            vy: (Math.random() - 0.2) * 0.8,
+                            life: 1.0, decay: 0.05,
+                            size: 1.2 + Math.random() * 1.4,
+                            color: '#FF6622', type: 'spark', gravity: 0.04
+                        });
+                    }
+                    // No more frequent pops — just a subtle small flicker every 12 frames
+                    if (enemy.dyingTimer % 12 === 0 && explosions.length < MAX_PARTICLES - 4) {
+                        const px = enemy.x + (Math.random() - 0.5) * 20;
+                        const py = enemy.y + (Math.random() - 0.5) * 10;
+                        createExplosion(px, py, 0.6);
+                    }
+
+                    // === Phase C: NO 2nd explosion, NO shockwave, NO fire burst, NO debris. ===
+                    // === The fuselage has already faded out and drifted off-screen via   ===
+                    // === the natural fade-out animation. Just clean up silently.        ===
+                    // (Audio cue kept for game feel — does not cause render lag)
+                    if (_offScreen || _onScreenCap || _timeCap) {
+                        enemy._dyingFinalDone = true;
+                        if (typeof playExplosionSound === 'function') playExplosionSound();
+                        const idx = enemies.indexOf(enemy);
+                        if (idx >= 0) enemies.splice(idx, 1);
+                    }
+                }
+                break;
+            }
+            // Heavy bomber - slow drift, alternates firing homing missiles from left/right wings
+            enemy._movePhase = (enemy._movePhase || 0) + 0.012;
             enemy._lifetime = (enemy._lifetime || 0) + 1;
-            if (enemy._lifetime > 300) {
-                createHitSpark(enemy.x, enemy.y, 0.6);
+            // Auto-remove after lifetime to prevent accumulation (40 sec = 2400 frames)
+            if (enemy._lifetime > 2400) {
+                createHitSpark(enemy.x, enemy.y, 0.8);
                 enemies.splice(ei, 1);
                 break;
             }
-            // Smooth left-right oscillation across screen
-            enemy.x += Math.sin(enemy._movePhase) * 1.2;
-            // Stay fixed at top
-            enemy.y = 70;
+            // Smooth slow horizontal oscillation
+            enemy.x += Math.sin(enemy._movePhase) * enemy.speed * 1.5;
+            // Keep roughly in upper area (allow gentle bobbing)
+            enemy.y = 80 + Math.sin(enemy._movePhase * 0.7) * 15;
             
-            // Tentacle attack toward player
+            // Homing missile fire (alternates left/right wing)
             enemy.shootCooldown--;
             if (enemy.shootCooldown <= 0) {
-                // Launch tentacle strike toward player
-                const maxReach = Math.min(player.y - enemy.y - 20, GAME_HEIGHT * 0.35);
-                octopusTentacles.push({
-                    ownerId: enemy._id,
-                    x: enemy.x,
-                    y: enemy.y + enemy.height / 2,
-                    length: 0,
-                    maxLength: Math.max(maxReach, 80),
-                    active: true,
-                    extending: true,
-                    retracting: false,
+                // Calculate missile spawn position (wing tip)
+                const wingOffsetX = (enemy.wingSide === 0 ? -1 : 1) * (enemy.width / 2 - 8);
+                const missileX = enemy.x + wingOffsetX;
+                const missileY = enemy.y + enemy.height / 2 - 4;
+                // Initial velocity toward player
+                const dx = player.x - missileX;
+                const dy = player.y - missileY;
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+                const mSpeed = 2.4 + currentStage * 0.15;
+                enemyBullets.push({
+                    x: missileX,
+                    y: missileY,
+                    width: 36,
+                    height: 36,
+                    speed: mSpeed,
+                    vx: (dx / dist) * mSpeed,
+                    vy: (dy / dist) * mSpeed,
+                    isHoming: true,
+                    homingTurnRate: 0.10 + currentStage * 0.008, // faster turn — reaches player before self-destruct
+                    homingLife: 180, // ~3s @60fps (reduced from 7s per user request -4s)
+                    color: '#FFAA00',
+                    ownerType: 'heavyBomber',
                     targetX: player.x,
-                    targetY: player.y - 30
+                    targetY: player.y
                 });
-                enemy.shootCooldown = 600 + Math.random() * 200; // Much longer interval (50% slower attacks)
+                // Toggle wing
+                enemy.wingSide = 1 - enemy.wingSide;
+                // 2-3 second interval (120-180 frames at 60fps)
+                enemy.shootCooldown = 120 + Math.floor(Math.random() * 60);
             }
             break;
         }
@@ -2103,14 +3502,14 @@ function update() {
         enemy.x = Math.max(enemy.width / 2, Math.min(GAME_WIDTH - enemy.width / 2, enemy.x));
         
         // Enemy shooting (basic)
-        if (enemy.type !== 'bomber' && enemy.type !== 'boss' && enemy.type !== 'octopus' && enemy.y > 50) {
+        if (enemy.type !== 'bomber' && enemy.type !== 'heavyBomber' && enemy.y > 50) {
             enemy.shootCooldown--;
             if (enemy.shootCooldown <= 0 && Math.random() < 0.02 * wave) {
                 enemyBullets.push({
                     x: enemy.x,
                     y: enemy.y + enemy.height / 2,
-                    width: 8,
-                    height: 8,
+                    width: 24,
+                    height: 24,
                     speed: 2.30 + currentStage * 0.30 // +60% from 1.44+stage*0.19 (was 0.9+stage*0.12)
                 });
                 enemy.shootCooldown = (wave >= 20) ? 130 : 90;
@@ -2136,7 +3535,45 @@ function update() {
             enemies.splice(ei, 1);
         }
     }
-    
+
+    // === Update detached boss wing debris (independent physics) ===
+    for (let wi = bossWingDebris.length - 1; wi >= 0; wi--) {
+        const w = bossWingDebris[wi];
+        // Gravity + horizontal drift + rotation
+        w.vy += 0.12;             // gravity
+        w.vx *= 0.995;            // mild air drag
+        w.x += w.vx;
+        w.y += w.vy;
+        w.angle += w.rotSpeed;
+        w.life--;
+        // Trail of small smoke from falling wing
+        if (w.life % 3 === 0 && explosions.length < MAX_PARTICLES - 2) {
+            explosions.push({
+                x: w.x + (Math.random() - 0.5) * 8,
+                y: w.y + (Math.random() - 0.5) * 6,
+                vx: (Math.random() - 0.5) * 0.3,
+                vy: -0.2 + Math.random() * 0.2,
+                life: 1.0, decay: 0.025,
+                size: 3 + Math.random() * 3,
+                color: '#333', isSmoke: true, type: 'smoke', gravity: 0.02
+            });
+            if (Math.random() < 0.3) {
+                explosions.push({
+                    x: w.x, y: w.y,
+                    vx: (Math.random() - 0.5) * 1.5,
+                    vy: (Math.random() - 0.5) * 1.0,
+                    life: 1.0, decay: 0.05,
+                    size: 1 + Math.random() * 1.5,
+                    color: '#FF6622', type: 'spark', gravity: 0.05
+                });
+            }
+        }
+        // Splice out when expired or far off-screen
+        if (w.life <= 0 || w.y > GAME_HEIGHT + 80 || w.x < -120 || w.x > GAME_WIDTH + 120) {
+            bossWingDebris.splice(wi, 1);
+        }
+    }
+
     // Update powerups
     // Converted from forEach to for (reverse for safe splice)
     for (let i = powerups.length - 1; i >= 0; i--) {
@@ -2168,6 +3605,8 @@ function update() {
                     let nearestDist = Infinity;
                     for (let ei = 0; ei < enemies.length; ei++) {
                         const enemy = enemies[ei];
+                        // === DYING GUARD: drone should not lock onto dying-fall enemies ===
+                        if (enemy.dying) continue;
                         const dx = enemy.x - drone.x;
                         const dy = enemy.y - drone.y;
                         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -2218,6 +3657,10 @@ function update() {
     // Converted from forEach to for (reverse for safe splice)
     for (let i = droneBullets.length - 1; i >= 0; i--) {
         const bullet = droneBullets[i];
+        // === SLOW-MO: skip drone bullet motion for slowed frames ===
+        if (slowMoActive && Math.random() > timeScale) {
+            continue;
+        }
         if (bullet.isHoming) {
             // Homing missile - track target enemy
             bullet.life--;
@@ -2286,37 +3729,73 @@ function update() {
         for (let ei = enemies.length - 1; ei >= 0; ei--) {
             const enemy = enemies[ei];
             if (bullet._hit) break;
+            // === DYING GUARD: skip enemies already in dying-fall / death-cascade ===
+            if (enemy.dying) continue;
             if (checkCollision(bullet, enemy)) {
+                // === B-52 STAGE BOSS: wings invulnerable. ===
+                if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
+                    const hb = enemy.hitboxBody;
+                    const ht = enemy.hitboxTail;
+                    const dRelX = bullet.x - enemy.x;
+                    const dRelY = bullet.y - enemy.y;
+                    const inBody = Math.abs(dRelX - hb.xOff) < hb.halfW && Math.abs(dRelY - hb.yOff) < hb.halfH;
+                    const inTail = Math.abs(dRelX - ht.xOff) < ht.halfW && Math.abs(dRelY - ht.yOff) < ht.halfH;
+                    if (!inBody && !inTail) {
+                        createHitSpark(bullet.x, bullet.y, 0.15);
+                        bullet._hit = true;
+                        droneBullets.splice(bi, 1);
+                        break;
+                    }
+                }
                 const dmg = (bullet.damage || 1) * (player.vPowerActive ? 1.5 : 1);
                 enemy.hp -= dmg;
                 bullet._hit = true;
                 droneBullets.splice(bi, 1);
                 
-                if (enemy.hp <= 0) {
+                if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
                     comboCount++;
                     comboTimer = 90; // 1.5 seconds to chain kills
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
-                    createHitSpark(enemy.x, enemy.y, 0.3);
-                    if (enemy.isWaveBoss) {
+                    // Mid-boss: trigger falling sequence instead of immediate splice (one-shot)
+                    if (enemy.isMidBoss && enemy.type === 'heavyBomber' && !enemy.dying) {
+                        enemy.dying = true;
+                        enemy.dyingTimer = 0;
+                        enemy.shootCooldown = 9999;
+                        enemy.fallRot = 0;
+                        enemy.fallVy = 1.5;
+                        enemy.fallVx = (Math.random() - 0.5) * 0.4;
+                        createExplosion(enemy.x, enemy.y, 1.5);
+                        continue;
+                    }
+                    if (enemy.isWaveBoss && !enemy.dying) {
+                        // One-shot reward: only runs the FIRST time this boss is killed
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                         if (bossIsFinalBoss) {
+                            // === MULTI-STEP CASCADE: small chained pops before big final + slow-mo ===
+                            enemy.dying = true;
+                            enemy.dyingTimer = 0;
+                            enemy.dyingCascade = 0;
+                            enemy.cascadeBaseX = enemy.x;
+                            enemy.cascadeBaseY = enemy.y;
                             bossDeathX = enemy.x;
                             bossDeathY = enemy.y;
-                            createHitSpark(enemy.x, enemy.y, 0.6);
-                                    deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
-                                    screenShake = 10; screenShakeIntensity = 3;
+                            continue; // skip splice — boss handled by its dying block
                         } else {
                             screenShake = Math.max(screenShake, 7); screenShakeIntensity = 2;
                         }
                         bossDefeated = true;
                         player.lives = Math.min(5, player.lives + 1);
                         bossClaws = [];
-                    } else {
+                    } else if (!enemy.isWaveBoss && !enemy.isMidBoss) {
+                        // Mook (regular enemy) drops powerup immediately
                         spawnPowerup(enemy.x, enemy.y);
                     }
-                    enemies.splice(ei, 1);
+                    // Dying enemies stay in the array — their dying block removes them later
+                    if (!enemy.dying) {
+                        enemies.splice(ei, 1);
+                    }
                 } else {
                     hitMarkers.push({ x: enemy.x + (Math.random() - 0.5) * 20, y: enemy.y, timer: 12 });
                     createHitSpark(enemy.x, enemy.y, 0.5);
@@ -2329,13 +3808,15 @@ function update() {
     // Converted from forEach to for (reverse for safe splice)
     // === PERF: Aggressive culling when overloaded ===
     var overloaded = explosions.length > 80;
+    // === SLOW-MO: Particle motion slowed when timeScale < 1 ===
+    const particleScale = timeScale < 0.95 ? timeScale : 1.0;
     for (let i = explosions.length - 1; i >= 0; i--) {
         const exp = explosions[i];
-        exp.x += exp.vx;
-        exp.y += exp.vy;
+        exp.x += exp.vx * particleScale;
+        exp.y += exp.vy * particleScale;
         exp.vx *= 0.95;
         exp.vy *= 0.95;
-        exp.life -= exp.decay;
+        exp.life -= exp.decay * particleScale;
         // Wing Fighter: rotate debris particles
         if (exp.isDebris && exp.rotSpeed) {
             exp.rotation = (exp.rotation || 0) + exp.rotSpeed;
@@ -2385,16 +3866,19 @@ function update() {
             const beamX = wUltimateX;
             for (let ei = enemies.length - 1; ei >= 0; ei--) {
                 const enemy = enemies[ei];
+                // === DYING GUARD: skip enemies already dying/cascading ===
+                if (enemy.dying) continue;
                 // Check if enemy is in the vertical beam path
                 if (Math.abs(enemy.x - beamX) < enemy.width / 2 + 12 && enemy.y < player.y) {
                     enemy.hp -= 46.08; // 3x missile damage
-                    if (enemy.hp <= 0) {
+                    if (enemy.hp <= 0 && !enemy.dying) {
                         score += enemy.score;
                         comboCount++;
                         comboTimer = 90;
                         if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
-                        createHitSpark(enemy.x, enemy.y, 0.3);
+                        createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
+                            // One-shot reward
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
                             if (bossIsFinalBoss) {
@@ -2402,19 +3886,36 @@ function update() {
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
                                 createHitSpark(enemy.x, enemy.y, 0.6);
-                                    deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
-                                    screenShake = 10; screenShakeIntensity = 3;
+                                deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
+                                screenShake = 10; screenShakeIntensity = 3;
+                                enemy.dying = true;
+                                enemy.dyingTimer = 0;
+                                enemy.dyingCascade = 0;
+                                enemy.cascadeBaseX = enemy.x;
+                                enemy.cascadeBaseY = enemy.y;
+                                continue; // skip splice
                             } else {
                                 screenShake = Math.max(screenShake, 7); screenShakeIntensity = 2;
                             }
                             bossDefeated = true;
                             bossClaws = [];
                             player.lives = Math.min(5, player.lives + 1);
+                        } else if (enemy.isMidBoss && enemy.type === 'heavyBomber') {
+                            enemy.dying = true;
+                            enemy.dyingTimer = 0;
+                            enemy.shootCooldown = 9999;
+                            enemy.fallRot = 0;
+                            enemy.fallVy = 1.5;
+                            enemy.fallVx = (Math.random() - 0.5) * 0.4;
+                            createExplosion(enemy.x, enemy.y, 1.5);
+                            continue;
                         } else {
                             spawnPowerup(enemy.x, enemy.y);
                         }
-                        enemies.splice(ei, 1);
-                    } else {
+                        if (!enemy.dying) {
+                            enemies.splice(ei, 1);
+                        }
+                    } else if (enemy.hp > 0) {
                         hitMarkers.push({ x: enemy.x + (Math.random() - 0.5) * 20, y: enemy.y, timer: 12 });
                     }
                 }
@@ -2525,12 +4026,14 @@ function update() {
             // Damage all enemies in radius (3x normal missile damage)
             for (let ei = enemies.length - 1; ei >= 0; ei--) {
                 const enemy = enemies[ei];
+                // === DYING GUARD: never re-damage / re-reward an enemy already in its death sequence ===
+                if (enemy.dying) continue;
                 const d = Math.hypot(mUltimateMissile.x - enemy.x, mUltimateMissile.y - enemy.y);
                 if (d < 200) {
                     enemy.hp -= 46.08; // 3x normal missile damage (15.36 * 3)
                     if (enemy.hp <= 0) {
                         score += enemy.score;
-                        createHitSpark(enemy.x, enemy.y, 0.3);
+                        createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
@@ -2663,7 +4166,24 @@ function update() {
         const missileHitbox = { x: m.x, y: m.y, width: 24, height: 24 };
         for (let ei = enemies.length - 1; ei >= 0; ei--) {
             const enemy = enemies[ei];
+            // === DYING GUARD: skip enemies in dying-fall / death-cascade ===
+            if (enemy.dying) continue;
             if (checkCollision(missileHitbox, enemy)) {
+                // === B-52 STAGE BOSS: wings are invulnerable. Only body/tail take damage. ===
+                if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
+                    const hb = enemy.hitboxBody;
+                    const ht = enemy.hitboxTail;
+                    const mRelX = m.x - enemy.x;
+                    const mRelY = m.y - enemy.y;
+                    const inBody = Math.abs(mRelX - hb.xOff) < hb.halfW && Math.abs(mRelY - hb.yOff) < hb.halfH;
+                    const inTail = Math.abs(mRelX - ht.xOff) < ht.halfW && Math.abs(mRelY - ht.yOff) < ht.halfH;
+                    if (!inBody && !inTail) {
+                        // Wing hit: missile fizzles without damage (still consumes missile)
+                        createHitSpark(m.x, m.y, 0.2);
+                        hitEnemy = true;
+                        break;
+                    }
+                }
                 // Direct hit: 12.8 damage (same power applied to ALL enemy types)
                 const missileDamage = 15.36; // 40% power reduction from 25.6
                 enemy.hp -= missileDamage;
@@ -2671,43 +4191,65 @@ function update() {
                 createHitSpark(enemy.x, enemy.y);
                 
                 // Splash damage to ALL nearby enemies (reverse iteration for safety)
+                // Skip dying enemies — their kill reward already triggered
                 for (let ej = enemies.length - 1; ej >= 0; ej--) {
-                    if (ej !== ei) {
-                        const e2 = enemies[ej];
-                        const d2 = Math.hypot(m.x - e2.x, m.y - e2.y);
-                        if (d2 < 140) { // wider splash radius
-                            e2.hp -= missileDamage * 0.5;
-                        }
+                    if (ej === ei) continue;
+                    const e2 = enemies[ej];
+                    if (e2.dying) continue;
+                    const d2 = Math.hypot(m.x - e2.x, m.y - e2.y);
+                    if (d2 < 140) { // wider splash radius
+                        e2.hp -= missileDamage * 0.5;
                     }
                 }
                 
                 // Proper enemy cleanup when killed by missile (score + powerup + removal)
-                if (enemy.hp <= 0) {
+                if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
                     comboCount++;
                     comboTimer = 90;
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
-                    createHitSpark(enemy.x, enemy.y, 0.3);
+                    createExplosion(enemy.x, enemy.y, 0.7);
                     if (enemy.isWaveBoss) {
+                        // One-shot reward for boss kill
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                         if (bossIsFinalBoss) {
                             bossDeathX = enemy.x;
                             bossDeathY = enemy.y;
                             createHitSpark(enemy.x, enemy.y, 0.6);
-                                    deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
-                                    screenShake = 10; screenShakeIntensity = 3;
+                            deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
+                            screenShake = 10; screenShakeIntensity = 3;
+                            enemy.dying = true;
+                            enemy.dyingTimer = 0;
+                            enemy.dyingCascade = 0;
+                            enemy.cascadeBaseX = enemy.x;
+                            enemy.cascadeBaseY = enemy.y;
+                            hitEnemy = true;
+                            break;
                         } else {
                             screenShake = Math.max(screenShake, 7); screenShakeIntensity = 2;
                         }
                         bossDefeated = true;
                         bossClaws = [];
                         player.lives = Math.min(5, player.lives + 1);
+                    } else if (enemy.isMidBoss && enemy.type === 'heavyBomber') {
+                        // heavyBomber dying-fall (one-shot)
+                        enemy.dying = true;
+                        enemy.dyingTimer = 0;
+                        enemy.shootCooldown = 9999;
+                        enemy.fallRot = 0;
+                        enemy.fallVy = 1.5;
+                        enemy.fallVx = (Math.random() - 0.5) * 0.4;
+                        createExplosion(enemy.x, enemy.y, 1.5);
+                        hitEnemy = true;
+                        break;
                     } else {
                         spawnPowerup(enemy.x, enemy.y);
                     }
-                    enemies.splice(ei, 1);
-                } else {
+                    if (!enemy.dying) {
+                        enemies.splice(ei, 1);
+                    }
+                } else if (enemy.hp > 0) {
                     hitMarkers.push({ x: enemy.x + (Math.random() - 0.5) * 20, y: enemy.y, timer: 12 });
                 }
                 hitEnemy = true;
@@ -2725,37 +4267,72 @@ function update() {
         const bullet = playerBullets[bi];
         for (let ei = enemies.length - 1; ei >= 0; ei--) {
             const enemy = enemies[ei];
+            // === DYING GUARD: enemies already in dying-fall / death-cascade are ignored entirely ===
+            if (enemy.dying) continue;
             if (checkCollision(bullet, enemy)) {
+                // === B-52 STAGE BOSS: wings are invulnerable. Only body/tail take damage. ===
+                if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
+                    const hb = bullet.hitboxBody || { xOff: 0, yOff: 2, halfW: 55, halfH: 28 };
+                    const ht = bullet.hitboxTail || { xOff: 0, yOff: 45, halfW: 25, halfH: 15 };
+                    // Bullet position relative to boss center
+                    const bRelX = bullet.x - enemy.x;
+                    const bRelY = bullet.y - enemy.y;
+                    const inBody = Math.abs(bRelX - hb.xOff) < hb.halfW && Math.abs(bRelY - hb.yOff) < hb.halfH;
+                    const inTail = Math.abs(bRelX - ht.xOff) < ht.halfW && Math.abs(bRelY - ht.yOff) < ht.halfH;
+                    if (!inBody && !inTail) {
+                        // Wing hit: bullet passes through, tiny spark on wing edge, NO damage
+                        createHitSpark(bullet.x, bullet.y, 0.15);
+                        continue; // skip damage, bullet keeps flying
+                    }
+                }
                 const bulletDmg = bullet.power || (player.vPowerActive ? 1.5 : 1);
                 enemy.hp -= bulletDmg;
                 createHitSpark(enemy.x + (Math.random() - 0.5) * enemy.width * 0.5, enemy.y + (Math.random() - 0.5) * enemy.height * 0.5);
                 playerBullets.splice(bi, 1);
-                
-                if (enemy.hp <= 0) {
+
+                if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
                     comboCount++;
                     comboTimer = 90;
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
-                    createHitSpark(enemy.x, enemy.y, 0.3);
-                    if (enemy.isWaveBoss) {
+                    createExplosion(enemy.x, enemy.y, 0.7);
+                    // Mid-boss falling sequence (heavyBomber) — guard prevents second kill from short-circuiting
+                    if (enemy.isMidBoss && enemy.type === 'heavyBomber' && !enemy.dying) {
+                        enemy.dying = true;
+                        enemy.dyingTimer = 0;
+                        enemy.shootCooldown = 9999;
+                        enemy.fallRot = 0;
+                        enemy.fallVy = 1.5;
+                        enemy.fallVx = (Math.random() - 0.5) * 0.4;
+                        createExplosion(enemy.x, enemy.y, 1.5);
+                        continue;
+                    }
+                    if (enemy.isWaveBoss && !enemy.dying) {
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
                         if (bossIsFinalBoss) {
+                            enemy.dying = true;
+                            enemy.dyingTimer = 0;
+                            enemy.dyingCascade = 0;
+                            enemy.cascadeBaseX = enemy.x;
+                            enemy.cascadeBaseY = enemy.y;
                             bossDeathX = enemy.x;
                             bossDeathY = enemy.y;
-                            createHitSpark(enemy.x, enemy.y, 0.6);
-                                    deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
-                                    screenShake = 10; screenShakeIntensity = 3;
+                            continue;
                         } else {
                             screenShake = Math.max(screenShake, 7); screenShakeIntensity = 2;
                         }
                         bossDefeated = true;
                         bossClaws = [];
                         player.lives = Math.min(5, player.lives + 1);
-                    } else {
+                    } else if (!enemy.isWaveBoss && !enemy.isMidBoss) {
+                        // Mid-boss already handled above; mook still gets powerup
                         spawnPowerup(enemy.x, enemy.y);
                     }
-                    enemies.splice(ei, 1);
+                    // dying boss / heavyBomber must stay in enemies[] until their dying block removes them
+                    if (!enemy.dying) {
+                        enemies.splice(ei, 1);
+                    }
                 } else {
                     hitMarkers.push({ x: enemy.x + (Math.random() - 0.5) * 20, y: enemy.y, timer: 12 });
                     createHitSpark(enemy.x, enemy.y, 0.5);
@@ -2789,23 +4366,61 @@ function update() {
         // Converted from forEach to for (reverse for safe splice)
         for (let ei = enemies.length - 1; ei >= 0; ei--) {
             const enemy = enemies[ei];
+            // === DYING GUARD: dying enemies (mid-boss fall / final-boss cascade) cannot damage player ===
+            if (enemy.dying) continue;
             if (checkCollision(enemy, player)) {
-                createHitSpark(enemy.x, enemy.y, 0.3);
-                if (enemy.isWaveBoss) {
-                    bossActive = false;
-                    if (bossIsFinalBoss) {
-                        bossDeathX = enemy.x;
-                        bossDeathY = enemy.y;
-                        createHitSpark(enemy.x, enemy.y, 0.6);
-                                    deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
-                                    screenShake = 10; screenShakeIntensity = 3;
+                // Ram collision: deals 1 damage (same as a single player bullet).
+                // - Mook (hp=1) → dies, normal splice, drop powerup, etc.
+                // - heavyBomber / final-boss (high hp) → takes 1 chip damage, stays alive,
+                //   so the player can no longer "win by grazing". Boss dying/cascade still
+                //   fires iff ram happened to bring hp to 0 (treated identically to a
+                //   weapon-collision kill — same dying flag, same bossDefeated timing).
+                enemy.hp -= 1;
+                createExplosion(enemy.x, enemy.y, 0.3);
+                let ramKilled = false;
+                if (enemy.hp <= 0 && !enemy.dying) {
+                    score += enemy.score;
+                    comboCount++;
+                    comboTimer = 90; // 1.5 seconds to chain kills
+                    if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
+                    if (enemy.isMidBoss && enemy.type === 'heavyBomber') {
+                        enemy.dying = true;
+                        enemy.dyingTimer = 0;
+                        enemy.shootCooldown = 9999;
+                        enemy.fallRot = 0;
+                        enemy.fallVy = 1.5;
+                        enemy.fallVx = (Math.random() - 0.5) * 0.4;
+                        createExplosion(enemy.x, enemy.y, 1.5);
+                        ramKilled = true;
+                    } else if (enemy.isWaveBoss) {
+                        bossActive = false;
+                        if (bossIsFinalBoss) {
+                            createExplosion(enemy.x, enemy.y, 0.6);
+                            deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
+                            screenShake = 10; screenShakeIntensity = 3;
+                            enemy.dying = true;
+                            enemy.dyingTimer = 0;
+                            enemy.dyingCascade = 0;
+                            enemy.cascadeBaseX = enemy.x;
+                            enemy.cascadeBaseY = enemy.y;
+                            bossDeathX = enemy.x;
+                            bossDeathY = enemy.y;
+                        } else {
+                            screenShake = Math.max(screenShake, 7); screenShakeIntensity = 2;
+                            bossDefeated = true;
+                            bossClaws = [];
+                        }
+                        spawnPowerup(enemy.x, enemy.y, true);
+                        player.lives = Math.min(5, player.lives + 1);
+                        ramKilled = true;
                     } else {
-                        screenShake = Math.max(screenShake, 7); screenShakeIntensity = 2;
+                        createExplosion(enemy.x, enemy.y, 0.7);
+                        spawnPowerup(enemy.x, enemy.y);
+                        ramKilled = true;
                     }
-                    bossDefeated = true;
-                    bossClaws = [];
                 }
-                enemies.splice(ei, 1);
+                // Player always takes the ram hit. dying boss/heavyBomber stays in enemies[]
+                // (their dying block removes them when the cascade completes).
                 if (player.shieldActive && !player.vPowerActive) {
                     // Shield absorbs the hit
                     player.shieldActive = false;
@@ -2814,6 +4429,10 @@ function update() {
                     screenShake = Math.max(screenShake, 8);
                 } else {
                     playerHit();
+                }
+                // Mook cleanup only — dying boss/heavyBomber manage themselves.
+                if (ramKilled && !enemy.dying) {
+                    enemies.splice(ei, 1);
                 }
             }
         }
@@ -2851,7 +4470,7 @@ function update() {
                     // Clear missiles when switching to W laser
                     missiles = [];
                     playerMissileLevel = 0;
-                    laserLevel = Math.min(6, laserLevel + 1);
+                    laserLevel = Math.min(LASER_MAX_LEVEL, laserLevel + 1);
                     sparkleFlashActive = true; sparkleFlashTimer = 30;
                     // Rebuild laser beams array to match level
                     laserBeams = [];
@@ -2990,9 +4609,11 @@ function drawLaserBeam() {
         const nx = dx / dist;
         const ny = dy / dist;
         ctx.save();
-        // Outer wide glow
-        ctx.shadowColor = "#00FFFF";
-        ctx.shadowBlur = 25;
+        // Outer wide glow — disabled under perfMode to keep framerate stable
+        if (!perfMode) {
+            ctx.shadowColor = "#00FFFF";
+            ctx.shadowBlur = 25;
+        }
         ctx.strokeStyle = "rgba(0, 255, 255, 0.7)";
         ctx.lineWidth = 10;
         ctx.beginPath();
@@ -3000,8 +4621,10 @@ function drawLaserBeam() {
         ctx.lineTo(tx, ty);
         ctx.stroke();
         // Mid beam
-        ctx.shadowColor = "#FFFFFF";
-        ctx.shadowBlur = 18;
+        if (!perfMode) {
+            ctx.shadowColor = "#FFFFFF";
+            ctx.shadowBlur = 18;
+        }
         ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
         ctx.lineWidth = 5;
         ctx.beginPath();
@@ -3018,8 +4641,9 @@ function drawLaserBeam() {
         ctx.stroke();
         // Edge sparks along beam
         ctx.fillStyle = "#FFFF00";
-        for (let j = 0; j < 4; j++) {
-            const t = (j + 1) / 5;
+        const sparkCount = perfMode ? 2 : 4;
+        for (let j = 0; j < sparkCount; j++) {
+            const t = (j + 1) / (sparkCount + 1);
             const sparkX = sx + dx * t + (Math.sin(frameCount * 0.5 + j) * 6) * ny;
             const sparkY = sy + dy * t + (Math.sin(frameCount * 0.5 + j) * 6) * (-nx);
             ctx.beginPath();
@@ -3031,8 +4655,10 @@ function drawLaserBeam() {
     // W-ultimate full screen laser
     if (wUltimateActive) {
         ctx.save();
-        ctx.shadowColor = "#00FFFF";
-        ctx.shadowBlur = 30;
+        if (!perfMode) {
+            ctx.shadowColor = "#00FFFF";
+            ctx.shadowBlur = 30;
+        }
         ctx.fillStyle = "rgba(0, 255, 255, 0.5)";
         ctx.fillRect(wUltimateX - 30, 0, 60, GAME_HEIGHT);
         ctx.fillStyle = "#FFFFFF";
@@ -3214,8 +4840,19 @@ function onBossDefeated() {
         comboTimer = 180;
         // IMMEDIATELY start hyperspace (no 5-minute freeze)
         if (bossIsFinalBoss) {
+            // Clear all remaining enemies and bullets for clean stage transition
+            const remainingEnemies = enemies.filter(e => !e.isWaveBoss);
+            for (let rc = 0; rc < remainingEnemies.length; rc++) {
+                createHitSpark(remainingEnemies[rc].x, remainingEnemies[rc].y, 0.4);
+            }
+            enemies = enemies.filter(e => e.isWaveBoss);
+            enemyBullets = [];
+            playerBullets = [];
+            droneBullets = [];
+            missiles = [];
+            octopusTentacles = [];
             hyperspaceActive = true;
-            hyperspaceTimer = 0;
+            hyperspaceTimer = HYPERSPACE_TOTAL; // FIX: start at full duration, not 0
             hyperspacePhase = 0;
         }
         // Reset state
@@ -3424,6 +5061,37 @@ function drawHyperspace() {
     if (currentPlanetIndex < PLANET_THEMES.length) {
         ctx.fillText('-> ' + PLANET_THEMES[currentPlanetIndex].name, centerX, 70);
     }
+
+    // === Stage transition message: "Moving to next area" ===
+    const phaseProgress = (HYPERSPACE_TOTAL - hyperspaceTimer) / HYPERSPACE_TOTAL;
+    // Show centered message during phase 1 (peak warp)
+    if (hyperspacePhase === 1) {
+        const msgAlpha = Math.min(1, phaseProgress * 2); // fade in
+        ctx.save();
+        ctx.globalAlpha = msgAlpha;
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 14px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.shadowColor = '#FF6600';
+        ctx.shadowBlur = 10;
+        // Pulsing y offset
+        const msgY = GAME_HEIGHT * 0.78 + Math.sin(frameCount * 0.08) * 3;
+        ctx.fillText('NEXT AREA...', centerX, msgY);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+
+    // === Background fade overlay (subtle vignette brightening during warp peak) ===
+    if (hyperspacePhase === 1) {
+        const fadeAlpha = 0.15 + Math.sin(frameCount * 0.05) * 0.05;
+        ctx.fillStyle = 'rgba(180, 220, 255, ' + fadeAlpha + ')';
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    } else if (hyperspacePhase === 2 && phaseProgress > 0.9) {
+        // End-of-jump fade to white before new stage starts
+        const endFade = (phaseProgress - 0.9) / 0.1;
+        ctx.fillStyle = 'rgba(255, 255, 255, ' + endFade * 0.6 + ')';
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
 }
 
 function generatePlanetSet(planetIndex) {
@@ -3569,80 +5237,102 @@ function drawMainPlanet() {
 }
 
 function drawBackground() {
-    // Deep space gradient
-    const theme = PLANET_THEMES[currentPlanetIndex % PLANET_THEMES.length];
-    const grad = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
-    grad.addColorStop(0, '#000005');
-    grad.addColorStop(0.5, theme.nebula);
-    grad.addColorStop(1, '#000008');
-    ctx.fillStyle = grad;
+    // === 1945 themed sky + clouds + ocean horizon (replaces deep-space backdrop) ===
+    // Sky gradient — uses cached gradient when available to avoid per-frame alloc
+    if (GRAD_CACHE.bgSkyDusk) {
+        ctx.fillStyle = GRAD_CACHE.bgSkyDusk;
+    } else {
+        const grad = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+        grad.addColorStop(0, '#1a3a6b');
+        grad.addColorStop(0.55, '#5b8bbf');
+        grad.addColorStop(0.78, '#a9c4dc');
+        grad.addColorStop(0.82, '#0c2a4a');  // ocean band
+        grad.addColorStop(1, '#081f3a');     // deeper ocean
+        ctx.fillStyle = grad;
+    }
     ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
-    // Nebula cloud
-    ctx.fillStyle = theme.nebula;
-    for (let i = 0; i < 3; i++) {
-        const nx = (frameCount * 0.1 + i * 200) % (GAME_WIDTH + 200) - 100;
-        const ny = 100 + i * 200;
-        const nebGrad = ctx.createRadialGradient(nx, ny, 0, nx, ny, 180);
-        nebGrad.addColorStop(0, 'rgba(' + theme.glow + ', 0.08)');
-        nebGrad.addColorStop(1, 'rgba(' + theme.glow + ', 0)');
-        ctx.fillStyle = nebGrad;
+    // Distant sun glow on the horizon (right side) — cached when available
+    if (GRAD_CACHE.sunGlowDusk) {
+        ctx.fillStyle = GRAD_CACHE.sunGlowDusk;
+    } else {
+        const sunGrad = ctx.createRadialGradient(GAME_WIDTH * 0.78, GAME_HEIGHT * 0.74, 0, GAME_WIDTH * 0.78, GAME_HEIGHT * 0.74, 220);
+        sunGrad.addColorStop(0, 'rgba(255, 220, 160, 0.55)');
+        sunGrad.addColorStop(0.4, 'rgba(255, 180, 120, 0.18)');
+        sunGrad.addColorStop(1, 'rgba(255, 180, 120, 0)');
+        ctx.fillStyle = sunGrad;
+    }
+    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    // Drifting cumulus clouds (parallax 0.3) — soft white puffs in the sky
+    // PERF: build radial once per cloud (positioned), but cache gradient via offscreen
+    for (let i = 0; i < 6; i++) {
+        const cx = (i * 180 + frameCount * 0.3 + 60) % (GAME_WIDTH + 240) - 120;
+        const cy = 50 + i * 55;
+        const cw = 90 + (i % 3) * 20;
+        const ch = 22 + (i % 2) * 6;
+        // Cache key per (size, type). Reuse if same-size slot exists.
+        const ck = 'cum_' + cw;
+        let cgrad = GRAD_CACHE[ck];
+        if (!cgrad) {
+            // Build relative to (0,0), used as a stamp at each cloud position
+            cgrad = ctx.createRadialGradient(0, 0, 0, 0, 0, cw);
+            cgrad.addColorStop(0, 'rgba(255, 255, 255, 0.55)');
+            cgrad.addColorStop(0.6, 'rgba(230, 235, 245, 0.25)');
+            cgrad.addColorStop(1, 'rgba(230, 235, 245, 0)');
+            GRAD_CACHE[ck] = cgrad;
+        }
+        ctx.fillStyle = cgrad;
+        ctx.save();
+        ctx.translate(cx, cy);
         ctx.beginPath();
-        ctx.arc(nx, ny, 180, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, cw, ch, 0, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
     }
 
-    // Layer 1: tiny distant stars (parallax 0.2)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-    for (let i = 0; i < 60; i++) {
-        const sx = (i * 17.3 + frameCount * 0.2) % GAME_WIDTH;
-        const sy = (i * 31.7) % GAME_HEIGHT;
-        const ss = 0.5 + (i % 3) * 0.3;
-        ctx.fillRect(sx, sy, ss, ss);
+    // Mid-distance clouds (parallax 0.6) — cached radial
+    if (!GRAD_CACHE.midCloud) {
+        const mg = ctx.createRadialGradient(0, 0, 0, 0, 0, 60);
+        mg.addColorStop(0, 'rgba(255, 255, 255, 0.35)');
+        mg.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        GRAD_CACHE.midCloud = mg;
     }
-
-    // Layer 2: medium stars (parallax 0.5)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-    for (let i = 0; i < 30; i++) {
-        const sx = (i * 53.1 + frameCount * 0.5) % GAME_WIDTH;
-        const sy = (i * 71.3) % GAME_HEIGHT;
-        // Twinkle
-        const tw = 0.5 + 0.5 * Math.sin(frameCount * 0.05 + i);
-        ctx.globalAlpha = 0.4 + tw * 0.4;
-        ctx.fillRect(sx, sy, 1.2, 1.2);
-    }
-    ctx.globalAlpha = 1;
-
-    // Layer 3: bright stars (parallax 1.0)
-    for (let i = 0; i < 12; i++) {
-        const sx = (i * 91.7 + frameCount * 1.0) % GAME_WIDTH;
-        const sy = (i * 113.3) % GAME_HEIGHT;
-        // 4-point star shape
-        const tw = 0.6 + 0.4 * Math.sin(frameCount * 0.08 + i * 1.7);
-        ctx.globalAlpha = tw;
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(sx, sy, 2, 2);
-        // Cross flare
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.fillRect(sx - 3, sy + 0.5, 8, 1);
-        ctx.fillRect(sx + 0.5, sy - 3, 1, 8);
-    }
-    ctx.globalAlpha = 1;
-
-    // Draw main planet
-    drawMainPlanet();
-
-    // Slow drifting cloud wisps (parallax 0.3)
     for (let i = 0; i < 4; i++) {
-        const cx = (i * 200 + frameCount * 0.3 + 100) % (GAME_WIDTH + 200) - 100;
-        const cy = 80 + i * 180;
-        const cloudGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 80);
-        cloudGrad.addColorStop(0, 'rgba(80, 80, 100, 0.06)');
-        cloudGrad.addColorStop(1, 'rgba(80, 80, 100, 0)');
-        ctx.fillStyle = cloudGrad;
+        const cx = (i * 260 + frameCount * 0.6 + 100) % (GAME_WIDTH + 200) - 100;
+        const cy = 200 + i * 40;
+        const cw = 60;
+        const ch = 14;
+        ctx.fillStyle = GRAD_CACHE.midCloud;
+        ctx.save();
+        ctx.translate(cx, cy);
         ctx.beginPath();
-        ctx.ellipse(cx, cy, 80, 25, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, cw, ch, 0, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
+    }
+
+    // Ocean horizon line — soft white surf line at the seam
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.fillRect(0, GAME_HEIGHT * 0.795, GAME_WIDTH, 1);
+
+    // Ocean wave shimmer (slow horizontal scrolling)
+    for (let i = 0; i < 5; i++) {
+        const wy = GAME_HEIGHT * 0.81 + i * 24;
+        const shift = (frameCount * (0.4 + i * 0.15)) % GAME_WIDTH;
+        ctx.fillStyle = 'rgba(220, 235, 250, ' + (0.18 - i * 0.025) + ')';
+        ctx.beginPath();
+        for (let x = -20; x <= GAME_WIDTH + 20; x += 32) {
+            const yo = Math.sin((x + shift) * 0.05 + i) * 1.5;
+            ctx.rect(x, wy + yo, 16, 1);
+        }
+        ctx.fill();
+    }
+
+    // Small distant contrails — drifting smoke trails from off-screen planes (periodically)
+    if (frameCount % 220 === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.fillRect(0, 60 + (frameCount % 3) * 30, GAME_WIDTH, 1);
     }
 }
 
@@ -3668,176 +5358,268 @@ function darkenHex(hex, amount) {
 function drawPlayer() {
     const px = player.x;
     const py = player.y;
-    // Engine flame (animated, behind ship)
+
+    // Engine flame (animated, behind ship) — propeller-style dual exhaust
     if (player.visible) {
-        const flameLen = 14 + Math.sin(frameCount * 0.6) * 4;
-        const flameWobble = Math.sin(frameCount * 0.8) * 2;
-        // Outer flame (red/orange)
-        ctx.fillStyle = '#FF4400';
+        const flameLen = 12 + Math.sin(frameCount * 0.6) * 3;
+        const flameWobble = Math.sin(frameCount * 0.8) * 1.5;
+        // Outer flame
+        ctx.fillStyle = '#FF3300';
         ctx.beginPath();
-        ctx.moveTo(px - 6, py + 14);
-        ctx.lineTo(px - 3 + flameWobble, py + 14 + flameLen * 0.6);
-        ctx.lineTo(px + 3 + flameWobble, py + 14 + flameLen * 0.6);
-        ctx.lineTo(px + 6, py + 14);
+        ctx.moveTo(px - 4, py + 16);
+        ctx.lineTo(px - 2 + flameWobble, py + 16 + flameLen * 0.6);
+        ctx.lineTo(px + 2 + flameWobble, py + 16 + flameLen * 0.6);
+        ctx.lineTo(px + 4, py + 16);
         ctx.closePath();
         ctx.fill();
-        // Middle flame (yellow)
+        // Middle flame
         ctx.fillStyle = '#FFAA00';
         ctx.beginPath();
-        ctx.moveTo(px - 4, py + 14);
-        ctx.lineTo(px - 1 + flameWobble * 0.7, py + 14 + flameLen * 0.5);
-        ctx.lineTo(px + 1 + flameWobble * 0.7, py + 14 + flameLen * 0.5);
-        ctx.lineTo(px + 4, py + 14);
+        ctx.moveTo(px - 2.5, py + 16);
+        ctx.lineTo(px - 0.5 + flameWobble * 0.6, py + 16 + flameLen * 0.45);
+        ctx.lineTo(px + 0.5 + flameWobble * 0.6, py + 16 + flameLen * 0.45);
+        ctx.lineTo(px + 2.5, py + 16);
         ctx.closePath();
         ctx.fill();
-        // Inner flame (white-hot)
-        ctx.fillStyle = '#FFFF99';
+        // Inner white-hot
+        ctx.fillStyle = '#FFFFCC';
         ctx.beginPath();
-        ctx.moveTo(px - 2, py + 14);
-        ctx.lineTo(px + flameWobble * 0.5, py + 14 + flameLen * 0.35);
-        ctx.lineTo(px + flameWobble * 0.5, py + 14 + flameLen * 0.35);
-        ctx.lineTo(px + 2, py + 14);
+        ctx.moveTo(px - 1.2, py + 16);
+        ctx.lineTo(px + flameWobble * 0.4, py + 16 + flameLen * 0.3);
+        ctx.lineTo(px + flameWobble * 0.4, py + 16 + flameLen * 0.3);
+        ctx.lineTo(px + 1.2, py + 16);
         ctx.closePath();
         ctx.fill();
     }
 
-    // Main fuselage (blue P-40)
     ctx.save();
-    // Shadow
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    // Soft shadow under the plane
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
     ctx.beginPath();
-    ctx.ellipse(px + 1, py + 2, 8, 18, 0, 0, Math.PI * 2);
+    ctx.ellipse(px + 1, py + 2, 10, 20, 0, 0, Math.PI * 2);
     ctx.fill();
-    // Body - main color
-    const bodyGrad = ctx.createLinearGradient(px - 8, py - 18, px + 8, py + 18);
-    bodyGrad.addColorStop(0, '#4DA6FF');
-    bodyGrad.addColorStop(0.5, '#1E70CC');
-    bodyGrad.addColorStop(1, '#0D3D7A');
+
+    // === Wide low main wings (P-40 trapezoidal silhouette) ===
+    // PERF: cached gradient (color stops only — orientation is vertical, so the
+    // gradient is identical regardless of px/py).
+    ctx.fillStyle = GRAD_CACHE.playerWing;
+    // Left wing
+    ctx.beginPath();
+    ctx.moveTo(px - 6, py - 1);
+    ctx.lineTo(px - 24, py - 2);
+    ctx.lineTo(px - 26, py + 2);
+    ctx.lineTo(px - 24, py + 8);
+    ctx.lineTo(px - 6, py + 4);
+    ctx.closePath();
+    ctx.fill();
+    // Right wing
+    ctx.beginPath();
+    ctx.moveTo(px + 6, py - 1);
+    ctx.lineTo(px + 24, py - 2);
+    ctx.lineTo(px + 26, py + 2);
+    ctx.lineTo(px + 24, py + 8);
+    ctx.lineTo(px + 6, py + 4);
+    ctx.closePath();
+    ctx.fill();
+
+    // Wing leading-edge highlight (lighter strip near fuselage)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.fillRect(px - 24, py, 18, 1);
+    ctx.fillRect(px + 6, py, 18, 1);
+
+    // === Fuselage (long oval, blue-grey P-40 camo top, olive underside) ===
+    const bodyGrad = ctx.createLinearGradient(px, py - 24, px, py + 18);
+    bodyGrad.addColorStop(0, '#3D6F9E');
+    bodyGrad.addColorStop(0.5, '#1E4A7A');
+    bodyGrad.addColorStop(0.85, '#3A4D2A');  // olive underside
+    bodyGrad.addColorStop(1, '#2A3A20');
     ctx.fillStyle = bodyGrad;
     ctx.beginPath();
-    ctx.moveTo(px, py - 22);            // nose tip
-    ctx.lineTo(px + 5, py - 10);        // right side
-    ctx.lineTo(px + 8, py + 4);         // right wing root
-    ctx.lineTo(px + 6, py + 16);        // right tail base
-    ctx.lineTo(px + 2, py + 18);        // tail right
-    ctx.lineTo(px - 2, py + 18);        // tail left
-    ctx.lineTo(px - 6, py + 16);        // left tail base
-    ctx.lineTo(px - 8, py + 4);         // left wing root
-    ctx.lineTo(px - 5, py - 10);        // left side
+    ctx.moveTo(px, py - 24);          // nose tip
+    ctx.lineTo(px + 4, py - 14);      // right cowling
+    ctx.lineTo(px + 5, py - 2);       // right shoulder
+    ctx.lineTo(px + 4, py + 12);      // right rear fuselage
+    ctx.lineTo(px + 3, py + 18);      // tail right
+    ctx.lineTo(px - 3, py + 18);      // tail left
+    ctx.lineTo(px - 4, py + 12);      // left rear fuselage
+    ctx.lineTo(px - 5, py - 2);       // left shoulder
+    ctx.lineTo(px - 4, py - 14);      // left cowling
     ctx.closePath();
     ctx.fill();
 
-    // Wing top (horizontal stabilizer - rear)
-    ctx.fillStyle = '#2E80D0';
-    ctx.beginPath();
-    ctx.moveTo(px - 14, py + 8);
-    ctx.lineTo(px - 6, py + 6);
-    ctx.lineTo(px - 4, py + 16);
-    ctx.lineTo(px - 16, py + 14);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(px + 14, py + 8);
-    ctx.lineTo(px + 6, py + 6);
-    ctx.lineTo(px + 4, py + 16);
-    ctx.lineTo(px + 16, py + 14);
-    ctx.closePath();
-    ctx.fill();
+    // Olive panel break line (camo division)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.fillRect(px - 4, py + 6, 8, 1);
 
-    // Main wings (broad horizontal)
-    const wingGrad = ctx.createLinearGradient(px - 22, py, px + 22, py);
-    wingGrad.addColorStop(0, '#2266BB');
-    wingGrad.addColorStop(0.5, '#3D8AD9');
-    wingGrad.addColorStop(1, '#2266BB');
-    ctx.fillStyle = wingGrad;
+    // === Cowling (P-40 distinctive nose with chin radiator scoop) ===
+    ctx.fillStyle = '#0E2A48';
     ctx.beginPath();
-    ctx.moveTo(px - 8, py + 2);
-    ctx.lineTo(px - 22, py + 6);
-    ctx.lineTo(px - 24, py + 10);
-    ctx.lineTo(px - 14, py + 10);
-    ctx.lineTo(px - 8, py + 8);
+    ctx.moveTo(px, py - 24);
+    ctx.lineTo(px + 4, py - 14);
+    ctx.lineTo(px + 3, py - 8);
+    ctx.lineTo(px - 3, py - 8);
+    ctx.lineTo(px - 4, py - 14);
     ctx.closePath();
     ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(px + 8, py + 2);
-    ctx.lineTo(px + 22, py + 6);
-    ctx.lineTo(px + 24, py + 10);
-    ctx.lineTo(px + 14, py + 10);
-    ctx.lineTo(px + 8, py + 8);
-    ctx.closePath();
-    ctx.fill();
+    // Radiator intake (chin scoop)
+    ctx.fillStyle = '#0A1A2E';
+    ctx.fillRect(px - 1.5, py - 4, 3, 4);
 
-    // Wing tips - red (roundel/identification)
-    ctx.fillStyle = '#FF2200';
+    // === Spinning propeller (animated) ===
+    const propAngle = frameCount * 0.8;
+    ctx.save();
+    ctx.translate(px, py - 20);
+    ctx.rotate(propAngle);
+    ctx.strokeStyle = 'rgba(255, 240, 220, 0.7)';
+    ctx.lineWidth = 1.2;
+    // 2 blades
     ctx.beginPath();
-    ctx.arc(px - 19, py + 8, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(px + 19, py + 8, 3, 0, Math.PI * 2);
-    ctx.fill();
-    // White outline on roundels
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(px - 19, py + 8, 3.5, 0, Math.PI * 2);
+    ctx.moveTo(-5, 0);
+    ctx.lineTo(5, 0);
+    ctx.moveTo(0, -5);
+    ctx.lineTo(0, 5);
     ctx.stroke();
+    // Propeller hub
+    ctx.fillStyle = '#FFD700';
     ctx.beginPath();
-    ctx.arc(px + 19, py + 8, 3.5, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(0, 0, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
 
-    // Cockpit canopy (glass dome)
-    const canopyGrad = ctx.createLinearGradient(px, py - 16, px, py - 4);
-    canopyGrad.addColorStop(0, '#88DDFF');
-    canopyGrad.addColorStop(0.5, '#4488CC');
-    canopyGrad.addColorStop(1, '#113355');
+    // === Horizontal stabilizer (rear wings) ===
+    ctx.fillStyle = '#1E4A7A';
+    ctx.beginPath();
+    ctx.moveTo(px - 10, py + 12);
+    ctx.lineTo(px - 4, py + 10);
+    ctx.lineTo(px - 3, py + 18);
+    ctx.lineTo(px - 12, py + 16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(px + 10, py + 12);
+    ctx.lineTo(px + 4, py + 10);
+    ctx.lineTo(px + 3, py + 18);
+    ctx.lineTo(px + 12, py + 16);
+    ctx.closePath();
+    ctx.fill();
+
+    // === Vertical stabilizer / rudder ===
+    ctx.fillStyle = '#1E4A7A';
+    ctx.beginPath();
+    ctx.moveTo(px - 2, py + 12);
+    ctx.lineTo(px + 2, py + 12);
+    ctx.lineTo(px + 1.5, py + 18);
+    ctx.lineTo(px - 1.5, py + 18);
+    ctx.closePath();
+    ctx.fill();
+    // Red rudder stripe (Flying Tigers tail marking)
+    ctx.fillStyle = '#CC0000';
+    ctx.fillRect(px - 1, py + 13, 2, 4);
+
+    // === Red roundel on wing tops (Flying Tigers insignia) ===
+    // Outer white ring + red center
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(px - 18, py + 3, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(px + 18, py + 3, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#CC0000';
+    ctx.beginPath();
+    ctx.arc(px - 18, py + 3, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(px + 18, py + 3, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // === Bubble canopy (P-40 framed greenhouse style) ===
+    const canopyGrad = ctx.createLinearGradient(px, py - 14, px, py - 2);
+    canopyGrad.addColorStop(0, '#9FD8E8');
+    canopyGrad.addColorStop(0.5, '#3D7AAB');
+    canopyGrad.addColorStop(1, '#1A3550');
     ctx.fillStyle = canopyGrad;
     ctx.beginPath();
-    ctx.moveTo(px, py - 16);
-    ctx.lineTo(px + 5, py - 10);
-    ctx.lineTo(px + 4, py - 4);
-    ctx.lineTo(px - 4, py - 4);
-    ctx.lineTo(px - 5, py - 10);
+    ctx.moveTo(px, py - 14);
+    ctx.lineTo(px + 5, py - 8);
+    ctx.lineTo(px + 4, py - 2);
+    ctx.lineTo(px - 4, py - 2);
+    ctx.lineTo(px - 5, py - 8);
     ctx.closePath();
     ctx.fill();
-    // Canopy highlight
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    // Canopy frame
+    ctx.strokeStyle = '#0A1A2E';
+    ctx.lineWidth = 0.6;
     ctx.beginPath();
-    ctx.moveTo(px - 2, py - 14);
+    ctx.moveTo(px, py - 14);
+    ctx.lineTo(px + 5, py - 8);
+    ctx.lineTo(px + 4, py - 2);
+    ctx.lineTo(px - 4, py - 2);
+    ctx.lineTo(px - 5, py - 8);
+    ctx.closePath();
+    ctx.stroke();
+    // Canopy highlight (glass reflection)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.beginPath();
+    ctx.moveTo(px - 2, py - 12);
     ctx.lineTo(px - 3, py - 6);
     ctx.lineTo(px - 1, py - 6);
-    ctx.lineTo(px, py - 14);
+    ctx.lineTo(px - 1, py - 12);
     ctx.closePath();
     ctx.fill();
-
-    // Nose cone highlight
-    ctx.fillStyle = '#FFCC00';
+    // Pilot head silhouette in canopy
+    ctx.fillStyle = 'rgba(20, 20, 30, 0.6)';
     ctx.beginPath();
-    ctx.moveTo(px, py - 22);
-    ctx.lineTo(px + 1.5, py - 18);
-    ctx.lineTo(px - 1.5, py - 18);
-    ctx.closePath();
+    ctx.arc(px - 0.5, py - 6, 1.5, 0, Math.PI * 2);
     ctx.fill();
 
-    // Body outline
-    ctx.strokeStyle = '#000820';
-    ctx.lineWidth = 1;
+    // Fuselage outline (subtle dark stroke)
+    ctx.strokeStyle = '#0A1A2E';
+    ctx.lineWidth = 0.6;
     ctx.beginPath();
-    ctx.moveTo(px, py - 22);
-    ctx.lineTo(px + 5, py - 10);
-    ctx.lineTo(px + 8, py + 4);
-    ctx.lineTo(px + 6, py + 16);
-    ctx.lineTo(px + 2, py + 18);
-    ctx.lineTo(px - 2, py + 18);
-    ctx.lineTo(px - 6, py + 16);
-    ctx.lineTo(px - 8, py + 4);
-    ctx.lineTo(px - 5, py - 10);
+    ctx.moveTo(px, py - 24);
+    ctx.lineTo(px + 4, py - 14);
+    ctx.lineTo(px + 5, py - 2);
+    ctx.lineTo(px + 4, py + 12);
+    ctx.lineTo(px + 3, py + 18);
+    ctx.lineTo(px - 3, py + 18);
+    ctx.lineTo(px - 4, py + 12);
+    ctx.lineTo(px - 5, py - 2);
+    ctx.lineTo(px - 4, py - 14);
     ctx.closePath();
     ctx.stroke();
 
-    // Weapon pods under wings
-    ctx.fillStyle = '#222222';
-    ctx.fillRect(px - 20, py + 6, 4, 3);
-    ctx.fillRect(px + 16, py + 6, 4, 3);
+    // Wing outlines
+    ctx.beginPath();
+    ctx.moveTo(px - 6, py - 1);
+    ctx.lineTo(px - 24, py - 2);
+    ctx.lineTo(px - 26, py + 2);
+    ctx.lineTo(px - 24, py + 8);
+    ctx.lineTo(px - 6, py + 4);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(px + 6, py - 1);
+    ctx.lineTo(px + 24, py - 2);
+    ctx.lineTo(px + 26, py + 2);
+    ctx.lineTo(px + 24, py + 8);
+    ctx.lineTo(px + 6, py + 4);
+    ctx.closePath();
+    ctx.stroke();
+
+    // === Wing-mounted machine guns (under each wing) ===
+    ctx.fillStyle = '#1A1A1A';
+    ctx.fillRect(px - 22, py + 5, 5, 1.5);
+    ctx.fillRect(px + 17, py + 5, 5, 1.5);
+    // Muzzle tip highlight
+    ctx.fillStyle = '#666666';
+    ctx.fillRect(px - 22, py + 5, 1, 1.5);
+    ctx.fillRect(px + 21, py + 5, 1, 1.5);
+
+    // === Landing gear stub (retracted) ===
+    ctx.fillStyle = '#0A1A2E';
+    ctx.fillRect(px - 3, py + 10, 1.5, 2);
+    ctx.fillRect(px + 1.5, py + 10, 1.5, 2);
 
     // Shield effect
     if (player.shieldActive) {
@@ -4025,6 +5807,53 @@ function drawPlayer() {
 
             ctx.save();
 
+            // === Dying enemies fade out + shrink as they drift toward screen edge ===
+            // (bosses/mid-bosses only — no random fades on live enemies)
+            // Effect: silhouette blurs (alpha drops) AND shrinks (scale decreases)
+            // from the moment dying begins, so the body visibly "fades into the
+            // distance" before it reaches the floor — eliminates the lingering
+            // crisp silhouette during the falling phase.
+            if (e.dying && (e.isMidBoss || e.isWaveBoss)) {
+                // --- Time-based fade (works for any dying boss) ---
+                // 0..~240 frames. Start fading very early (around 10% in) so the
+                // fuselage loses crispness quickly, fully gone by ~95%.
+                let alpha = 1;
+                let scale = 1;
+                if (typeof e.dyingTimer === 'number' && e.dyingTimer > 0) {
+                    // Total dying window: 240 frames (matches Phase B _timeCap)
+                    const totalFrames = 240;
+                    const tFade = Math.max(0, Math.min(1, (e.dyingTimer - 25) / (totalFrames - 25)));
+                    // Ease-in fade so the first frames still feel solid, then it
+                    // softens and dissolves.
+                    const tEase = tFade * tFade;
+                    alpha = Math.min(alpha, 1 - tEase);
+                    // Also shrink: scale goes 1.0 → 0.55 over the same window
+                    scale = Math.max(0.55, 1 - tFade * 0.45);
+                }
+
+                // --- Edge-based fade (faster near the corner) ---
+                if (e._dyingDriftLeft !== undefined) {
+                    const edgeX = e._dyingDriftLeft ? 0 : GAME_WIDTH;
+                    const distX = Math.abs(e.x - edgeX) / (GAME_WIDTH / 2);
+                    const distY = (GAME_HEIGHT - e.y) / GAME_HEIGHT;
+                    const progress = 1 - Math.min(1, Math.max(distX, 1 - distY));
+                    // Start fading earlier than before (5% in) so the silhouette
+                    // softens well before it reaches the floor.
+                    let fadeT = Math.max(0, Math.min(1, (progress - 0.05) / 0.95));
+                    const edgeAlpha = 1 - fadeT * fadeT;
+                    alpha = Math.min(alpha, edgeAlpha);
+                }
+
+                if (alpha < 1) ctx.globalAlpha = Math.max(0, alpha);
+
+                // Apply scale around the body center so it visibly recedes.
+                if (scale < 1) {
+                    ctx.translate(e.x, e.y);
+                    ctx.scale(scale, scale);
+                    ctx.translate(-e.x, -e.y);
+                }
+            }
+
             if (e.type === 'scout') {
                 // Small agile scout (red/green)
                 drawScoutEnemy(e);
@@ -4034,14 +5863,17 @@ function drawPlayer() {
             } else if (e.type === 'bomber') {
                 // Large slow bomber (gray, wide wings)
                 drawBomberEnemy(e);
-            } else if (e.type === 'heart') {
-                // Heart mid-boss
-                drawHeartBoss(e);
-            } else if (e.type === 'octopus') {
-                // Octopus mid-boss
-                drawOctopusBoss(e);
-            } else if (e.type === 'final') {
-                // Final boss
+            } else if (e.type === 'heavyBomber') {
+                // Heavy bomber mid-boss (unified for all stages - long bomber silhouette)
+                drawHeavyBomber(e);
+            } else if (e.type === 'final' || e.type === 'boss') {
+                // Stage final boss (B-52 inspired bomber, draw in drawFinalBoss)
+                if (e.dying && e.angle) {
+                    // Apply drift tilt so the broken fuselage visibly leans as it falls
+                    ctx.translate(e.x, e.y);
+                    ctx.rotate(e.angle);
+                    ctx.translate(-e.x, -e.y);
+                }
                 drawFinalBoss(e);
             } else if (e.type === 'waveBoss' || e.type === 'wave_boss') {
                 drawWaveBoss(e);
@@ -4050,6 +5882,100 @@ function drawPlayer() {
                 drawScoutEnemy(e);
             }
 
+            ctx.restore();
+        }
+    }
+
+    // === Detached boss wing debris — broken wings falling independently ===
+    function drawBossWingDebris() {
+        for (let wi = 0; wi < bossWingDebris.length; wi++) {
+            const w = bossWingDebris[wi];
+            if (!w) continue;
+            ctx.save();
+            ctx.translate(w.x, w.y);
+            ctx.rotate(w.angle);
+            const sw = w.size;     // half-width of wing
+            const sh = 14;        // half-height of wing slab
+
+            // Wing slab — dark metallic color, slightly brighter edge if burning
+            ctx.fillStyle = '#3A3A3A';
+            ctx.strokeStyle = '#0A0A0A';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            if (w.side === 'left') {
+                // Wing tip extends to the LEFT
+                ctx.moveTo(0, -sh * 0.6);          // root top
+                ctx.lineTo(-sw, -sh);               // tip top
+                ctx.lineTo(-sw * 0.95, sh * 0.7);   // tip bottom
+                ctx.lineTo(0, sh * 0.6);            // root bottom
+            } else {
+                // Wing tip extends to the RIGHT
+                ctx.moveTo(0, -sh * 0.6);
+                ctx.lineTo(sw, -sh);
+                ctx.lineTo(sw * 0.95, sh * 0.7);
+                ctx.lineTo(0, sh * 0.6);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Engine pod near root
+            ctx.fillStyle = '#1A1A1A';
+            if (w.side === 'left') {
+                ctx.beginPath();
+                ctx.ellipse(-sw * 0.35, 0, 5, 3, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                // Exhaust glow
+                ctx.fillStyle = '#FF6600';
+                ctx.beginPath();
+                ctx.ellipse(-sw * 0.35, sh * 0.45, 3, 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                ctx.beginPath();
+                ctx.ellipse(sw * 0.35, 0, 5, 3, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                ctx.fillStyle = '#FF6600';
+                ctx.beginPath();
+                ctx.ellipse(sw * 0.35, sh * 0.45, 3, 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Wing leading-edge highlight
+            ctx.strokeStyle = '#A8B0B8';
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            if (w.side === 'left') {
+                ctx.moveTo(0, -sh * 0.6);
+                ctx.lineTo(-sw, -sh);
+            } else {
+                ctx.moveTo(0, -sh * 0.6);
+                ctx.lineTo(sw, -sh);
+            }
+            ctx.stroke();
+
+            // Burning red flash as the wing dies (life fades)
+            const lifeRatio = Math.max(0, w.life / 240);
+            // === Wings fade out naturally as their life drains — no 2nd explosion needed ===
+            // Start fading at 60% life, fully gone at 10% life
+            let wingAlpha = 1;
+            if (lifeRatio < 0.6) {
+                wingAlpha = (lifeRatio - 0.1) / 0.5;
+                if (wingAlpha < 0) wingAlpha = 0;
+                if (wingAlpha > 1) wingAlpha = 1;
+                ctx.globalAlpha = wingAlpha;
+            }
+            if (lifeRatio < 0.6) {
+                ctx.fillStyle = 'rgba(255, 80, 20, ' + (1 - lifeRatio) * 0.4 + ')';
+                ctx.beginPath();
+                if (w.side === 'left') {
+                    ctx.ellipse(-sw * 0.5, 0, sw * 0.7, sh * 1.2, 0, 0, Math.PI * 2);
+                } else {
+                    ctx.ellipse(sw * 0.5, 0, sw * 0.7, sh * 1.2, 0, 0, Math.PI * 2);
+                }
+                ctx.fill();
+            }
             ctx.restore();
         }
     }
@@ -4080,12 +6006,8 @@ function drawPlayer() {
         ctx.lineTo(ex + 4, ey + 3);
         ctx.closePath();
         ctx.fill();
-        // Body (red)
-        const bodyGrad = ctx.createLinearGradient(ex - 4, ey - 12, ex + 4, ey + 8);
-        bodyGrad.addColorStop(0, '#FF6644');
-        bodyGrad.addColorStop(0.5, '#CC2222');
-        bodyGrad.addColorStop(1, '#661111');
-        ctx.fillStyle = bodyGrad;
+        // Body (red) — PERF: cached gradient (same color stops regardless of position)
+        ctx.fillStyle = GRAD_CACHE.scoutBody;
         ctx.beginPath();
         ctx.moveTo(ex, ey - 12);
         ctx.lineTo(ex + 4, ey - 4 + wobble);
@@ -4120,12 +6042,8 @@ function drawPlayer() {
         ctx.beginPath();
         ctx.ellipse(ex + 1, ey + 2, 12, 14, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Main wings
-        const wingGrad = ctx.createLinearGradient(ex - 20, ey, ex + 20, ey);
-        wingGrad.addColorStop(0, '#661111');
-        wingGrad.addColorStop(0.5, '#AA2222');
-        wingGrad.addColorStop(1, '#661111');
-        ctx.fillStyle = wingGrad;
+        // Main wings — PERF: cached gradient
+        ctx.fillStyle = GRAD_CACHE.scoutWing;
         ctx.beginPath();
         ctx.moveTo(ex - 6, ey - 2);
         ctx.lineTo(ex - 20, ey);
@@ -4140,12 +6058,8 @@ function drawPlayer() {
         ctx.lineTo(ex + 6, ey + 8);
         ctx.closePath();
         ctx.fill();
-        // Body (red)
-        const bodyGrad = ctx.createLinearGradient(ex - 5, ey - 16, ex + 5, ey + 12);
-        bodyGrad.addColorStop(0, '#FF8866');
-        bodyGrad.addColorStop(0.5, '#CC3322');
-        bodyGrad.addColorStop(1, '#771111');
-        ctx.fillStyle = bodyGrad;
+        // Body (red) — PERF: cached gradient
+        ctx.fillStyle = GRAD_CACHE.scoutBody;
         ctx.beginPath();
         ctx.moveTo(ex, ey - 16);
         ctx.lineTo(ex + 5, ey - 6);
@@ -4212,12 +6126,8 @@ function drawPlayer() {
         ctx.beginPath();
         ctx.ellipse(ex + 2, ey + 3, 18, 18, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Big wings
-        const wingGrad = ctx.createLinearGradient(ex - 28, ey, ex + 28, ey);
-        wingGrad.addColorStop(0, '#444444');
-        wingGrad.addColorStop(0.5, '#777777');
-        wingGrad.addColorStop(1, '#444444');
-        ctx.fillStyle = wingGrad;
+        // Big wings — PERF: cached gradient
+        ctx.fillStyle = GRAD_CACHE.heavyWing;
         ctx.beginPath();
         ctx.moveTo(ex - 8, ey - 4);
         ctx.lineTo(ex - 28, ey - 2);
@@ -4248,12 +6158,8 @@ function drawPlayer() {
         ctx.lineTo(ex, ey + 12);
         ctx.closePath();
         ctx.fill();
-        // Body (gray)
-        const bodyGrad = ctx.createLinearGradient(ex - 7, ey - 20, ex + 7, ey + 14);
-        bodyGrad.addColorStop(0, '#AAAAAA');
-        bodyGrad.addColorStop(0.5, '#666666');
-        bodyGrad.addColorStop(1, '#333333');
-        ctx.fillStyle = bodyGrad;
+        // Body (gray) — PERF: cached gradient
+        ctx.fillStyle = GRAD_CACHE.heavyBody;
         ctx.beginPath();
         ctx.moveTo(ex, ey - 20);
         ctx.lineTo(ex + 7, ey - 8);
@@ -4305,120 +6211,447 @@ function drawPlayer() {
     }
 
     // ===== HEART BOSS: pink heart-shape with eyes =====
+    // Stage 1 mid-boss: large, long 4-engine heavy bomber (Flying Tigers-era)
     function drawHeartBoss(e) {
         const ex = e.x, ey = e.y;
-        // Pulsing aura
-        const pulse = 1 + Math.sin(frameCount * 0.1) * 0.05;
-        // Outer glow
-        const glowGrad = ctx.createRadialGradient(ex, ey, 0, ex, ey, 50 * pulse);
-        glowGrad.addColorStop(0, 'rgba(255, 100, 200, 0.4)');
-        glowGrad.addColorStop(1, 'rgba(255, 100, 200, 0)');
+        const hit = e.hitFlash && e.hitFlash > 0;
+        const pulse = 1 + Math.sin(frameCount * 0.08) * 0.03;
+
+        // Outer shadow (under bomber body)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.beginPath();
+        ctx.ellipse(ex + 6, ey + 18, 70 * pulse, 10 * pulse, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Glow halo
+        const glowGrad = ctx.createRadialGradient(ex, ey, 0, ex, ey, 90 * pulse);
+        glowGrad.addColorStop(0, 'rgba(180, 200, 220, 0.18)');
+        glowGrad.addColorStop(1, 'rgba(180, 200, 220, 0)');
         ctx.fillStyle = glowGrad;
         ctx.beginPath();
-        ctx.arc(ex, ey, 50 * pulse, 0, Math.PI * 2);
+        ctx.arc(ex, ey, 90 * pulse, 0, Math.PI * 2);
         ctx.fill();
-        // Heart shape (two circles + triangle bottom)
-        const hs = 1.0 * pulse;
-        ctx.fillStyle = '#FF4488';
+
+        ctx.save();
+        ctx.translate(ex, ey);
+        // Banking on horizontal drift
+        const bank = Math.sin((e._movePhase || 0) * 1.2) * 0.12;
+        ctx.rotate(bank);
+
+        // Dimensions: long horizontal bomber ~ 140 wide, 50 tall
+        const W = 70;  // half-width
+        const H = 22;  // half-height of fuselage
+        const bodyColor = hit ? '#FF8866' : '#5A6470';
+        const bellyColor = hit ? '#FFAA88' : '#7A8490';
+        const wingEdge = hit ? '#FF6644' : '#3A4450';
+
+        // ===== Wings (rear layer) =====
+        ctx.fillStyle = wingEdge;
         ctx.beginPath();
-        ctx.arc(ex - 12 * hs, ey - 6 * hs, 12 * hs, 0, Math.PI * 2);
-        ctx.arc(ex + 12 * hs, ey - 6 * hs, 12 * hs, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(ex - 23 * hs, ey - 2 * hs);
-        ctx.lineTo(ex, ey + 22 * hs);
-        ctx.lineTo(ex + 23 * hs, ey - 2 * hs);
+        ctx.moveTo(-W, -2);
+        ctx.lineTo(-W - 8, H + 4);
+        ctx.lineTo(-18, H + 4);
+        ctx.lineTo(-12, -2);
         ctx.closePath();
         ctx.fill();
-        // Highlight
-        ctx.fillStyle = 'rgba(255, 200, 230, 0.5)';
         ctx.beginPath();
-        ctx.ellipse(ex - 8, ey - 10, 5, 7, -0.5, 0, Math.PI * 2);
+        ctx.moveTo(W, -2);
+        ctx.lineTo(W + 8, H + 4);
+        ctx.lineTo(18, H + 4);
+        ctx.lineTo(12, -2);
+        ctx.closePath();
         ctx.fill();
-        // Eyes (angry)
+
+        // ===== Wing top surface =====
+        ctx.fillStyle = bodyColor;
+        ctx.beginPath();
+        ctx.moveTo(-W + 4, -6);
+        ctx.lineTo(-W - 4, H + 2);
+        ctx.lineTo(-12, H + 2);
+        ctx.lineTo(-8, -6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(W - 4, -6);
+        ctx.lineTo(W + 4, H + 2);
+        ctx.lineTo(12, H + 2);
+        ctx.lineTo(8, -6);
+        ctx.closePath();
+        ctx.fill();
+
+        // ===== Wing roundels (red dot, white outline) =====
         ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath(); ctx.arc(-W * 0.62, -1, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc( W * 0.62, -1, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#CC2233';
+        ctx.beginPath(); ctx.arc(-W * 0.62, -1, 2.6, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc( W * 0.62, -1, 2.6, 0, Math.PI * 2); ctx.fill();
+
+        // ===== Fuselage =====
+        ctx.fillStyle = bodyColor;
         ctx.beginPath();
-        ctx.ellipse(ex - 7, ey - 2, 3, 4, 0, 0, Math.PI * 2);
+        ctx.moveTo(-W + 6, -H * 0.6);
+        ctx.lineTo(-W + 14, -H);
+        ctx.lineTo( W - 14, -H);
+        ctx.lineTo( W - 6, -H * 0.6);
+        ctx.lineTo( W - 6,  H * 0.6);
+        ctx.lineTo( W - 14,  H);
+        ctx.lineTo(-W + 14,  H);
+        ctx.lineTo(-W + 6,  H * 0.6);
+        ctx.closePath();
+        ctx.fill();
+
+        // Belly highlight
+        ctx.fillStyle = bellyColor;
+        ctx.beginPath();
+        ctx.moveTo(-W + 12,  H * 0.2);
+        ctx.lineTo(-W + 18,  H * 0.85);
+        ctx.lineTo( W - 18,  H * 0.85);
+        ctx.lineTo( W - 12,  H * 0.2);
+        ctx.closePath();
+        ctx.fill();
+
+        // ===== Nose =====
+        ctx.fillStyle = wingEdge;
+        ctx.beginPath();
+        ctx.moveTo(W - 14, -H * 0.55);
+        ctx.lineTo(W + 6, 0);
+        ctx.lineTo(W - 14,  H * 0.55);
+        ctx.closePath();
+        ctx.fill();
+
+        // ===== Tail =====
+        ctx.fillStyle = wingEdge;
+        ctx.beginPath();
+        ctx.moveTo(-W + 6, -H * 0.5);
+        ctx.lineTo(-W - 4, -H * 1.4);
+        ctx.lineTo(-W + 16, -H * 1.4);
+        ctx.lineTo(-W + 10, -H * 0.5);
+        ctx.closePath();
         ctx.fill();
         ctx.beginPath();
-        ctx.ellipse(ex + 7, ey - 2, 3, 4, 0, 0, Math.PI * 2);
+        ctx.moveTo(-W + 6,  H * 0.5);
+        ctx.lineTo(-W - 4,  H * 1.4);
+        ctx.lineTo(-W + 16,  H * 1.4);
+        ctx.lineTo(-W + 10,  H * 0.5);
+        ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = '#000000';
+
+        // Tail rudder stripe (Flying Tigers accent)
+        ctx.fillStyle = '#CC2233';
+        ctx.fillRect(-W - 2, -H * 1.35, 3, H * 0.3);
+        ctx.fillRect(-W - 2,  H * 1.05, 3, H * 0.3);
+
+        // ===== Cockpit canopy (cyan glass) — PERF: cached gradient =====
+        ctx.fillStyle = GRAD_CACHE.heavyCanopy;
         ctx.beginPath();
-        ctx.arc(ex - 7, ey - 1, 1.5, 0, Math.PI * 2);
+        ctx.moveTo(W * 0.18, -H * 0.55);
+        ctx.lineTo(W * 0.55, -H * 0.85);
+        ctx.lineTo(W * 0.78, -H * 0.55);
+        ctx.lineTo(W * 0.55, -H * 0.30);
+        ctx.closePath();
         ctx.fill();
+        // Canopy frame
+        ctx.strokeStyle = '#222831';
+        ctx.lineWidth = 1.2;
         ctx.beginPath();
-        ctx.arc(ex + 7, ey - 1, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-        // Angry eyebrows
-        ctx.strokeStyle = '#880044';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(ex - 10, ey - 6);
-        ctx.lineTo(ex - 4, ey - 4);
+        ctx.moveTo(W * 0.18, -H * 0.55);
+        ctx.lineTo(W * 0.55, -H * 0.85);
+        ctx.lineTo(W * 0.78, -H * 0.55);
+        ctx.lineTo(W * 0.55, -H * 0.30);
+        ctx.closePath();
         ctx.stroke();
+        // Pilot silhouette
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
         ctx.beginPath();
-        ctx.moveTo(ex + 10, ey - 6);
-        ctx.lineTo(ex + 4, ey - 4);
-        ctx.stroke();
-        // Mouth
-        ctx.fillStyle = '#880033';
-        ctx.beginPath();
-        ctx.ellipse(ex, ey + 8, 4, 2, 0, 0, Math.PI * 2);
+        ctx.ellipse(W * 0.55, -H * 0.55, 3, 4, 0, 0, Math.PI * 2);
         ctx.fill();
-        // HP bar
+
+        // ===== 4 engines under wings =====
+        // Inner engines
+        ctx.fillStyle = '#3A4450';
+        ctx.fillRect(-W * 0.45 - 4, H + 4, 8, 6);
+        ctx.fillRect( W * 0.45 - 4, H + 4, 8, 6);
+        // Outer engines
+        ctx.fillStyle = '#3A4450';
+        ctx.fillRect(-W * 0.85 - 4, H + 4, 8, 6);
+        ctx.fillRect( W * 0.85 - 4, H + 4, 8, 6);
+        // Engine cowling rings
+        ctx.fillStyle = '#1A1F26';
+        [-0.85, -0.45, 0.45, 0.85].forEach(rx => {
+            ctx.beginPath();
+            ctx.arc(W * rx, H + 5, 2.2, 0, Math.PI * 2);
+            ctx.fill();
+        });
+
+        // ===== Spinning propellers (4) =====
+        const propAngle = frameCount * 0.6;
+        [-0.85, -0.45, 0.45, 0.85].forEach(rx => {
+            ctx.save();
+            ctx.translate(W * rx, H + 4);
+            ctx.rotate(propAngle + rx * 0.7);
+            ctx.fillStyle = 'rgba(220, 230, 240, 0.55)';
+            ctx.fillRect(-7, -0.8, 14, 1.6);
+            ctx.fillStyle = '#FFD24A';
+            ctx.beginPath();
+            ctx.arc(0, 0, 1.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        });
+
+        // ===== Bomb bay doors (under fuselage) =====
+        ctx.fillStyle = '#1A1F26';
+        ctx.fillRect(-12, H - 1, 24, 4);
+        ctx.fillStyle = '#FFAA22';
+        for (let i = -10; i <= 10; i += 5) {
+            ctx.beginPath();
+            ctx.arc(i, H + 1, 1.3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // ===== Dorsal machine-gun turret =====
+        ctx.fillStyle = '#3A4450';
+        ctx.fillRect(-W * 0.30, -H - 4, 8, 4);
+        ctx.fillRect(-W * 0.28, -H - 7, 4, 4);
+        // Gun barrels
+        ctx.strokeStyle = '#1A1F26';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-W * 0.28, -H - 7);
+        ctx.lineTo(-W * 0.28, -H - 12);
+        ctx.moveTo(-W * 0.24, -H - 7);
+        ctx.lineTo(-W * 0.24, -H - 12);
+        ctx.stroke();
+
+        // ===== Wing-tip navigation lights =====
+        ctx.fillStyle = '#FF3333';
+        ctx.beginPath();
+        ctx.arc(-W - 5, 0, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#33FF55';
+        ctx.beginPath();
+        ctx.arc(W + 5, 0, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+
+        // ===== HP bar (large, above bomber) =====
         if (e.hp !== undefined && e.maxHp !== undefined) {
             const hpRatio = Math.max(0, e.hp / e.maxHp);
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillRect(ex - 25, ey - 28, 50, 5);
+            const bw = 90;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(ex - bw / 2 - 1, ey - 36, bw + 2, 7);
             ctx.fillStyle = hpRatio > 0.5 ? '#00FF44' : hpRatio > 0.25 ? '#FFAA00' : '#FF2222';
-            ctx.fillRect(ex - 25, ey - 28, 50 * hpRatio, 5);
+            ctx.fillRect(ex - bw / 2, ey - 35, bw * hpRatio, 5);
+            ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(ex - bw / 2 - 1, ey - 36, bw + 2, 7);
         }
     }
 
-    // ===== OCTOPUS BOSS: purple body with tentacles =====
-    function drawOctopusBoss(e) {
+    // ===== HEAVY BOMBER: large 2-engine bomber (replaces octopus) =====
+    function drawHeavyBomber(e) {
         const ex = e.x, ey = e.y;
-        // Body (rounded dome)
-        const bodyGrad = ctx.createRadialGradient(ex - 5, ey - 5, 0, ex, ey, 28);
-        bodyGrad.addColorStop(0, '#CC88EE');
-        bodyGrad.addColorStop(0.5, '#8844BB');
-        bodyGrad.addColorStop(1, '#440066');
-        ctx.fillStyle = bodyGrad;
+        const w = e.width || 70;
+        const h = e.height || 50;
+        const isDying = !!e.dying;
+        const wingsBroken = isDying && (e.dyingTimer || 0) >= 1;
+        ctx.save();
+        ctx.translate(ex, ey);
+        // Slight banking based on horizontal velocity (or use drift tilt when dying)
+        const bankAngle = isDying
+            ? (e.angle || 0)
+            : Math.sin((e._movePhase || 0) * 1.2) * 0.15;
+        ctx.rotate(bankAngle);
+
+        // Outer shadow under body
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
         ctx.beginPath();
-        ctx.arc(ex, ey, 28, 0, Math.PI * 2);
+        ctx.ellipse(0, 4, w * 0.55, h * 0.35, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Eye glow
-        ctx.fillStyle = '#FFFF00';
-        ctx.shadowColor = '#FFFF00';
-        ctx.shadowBlur = 10;
+
+        // === Main fuselage (large, gray-olive bomber) ===
+        const fuseGrad = ctx.createLinearGradient(-w * 0.4, -h * 0.5, w * 0.4, h * 0.5);
+        fuseGrad.addColorStop(0, '#6B6B5A');
+        fuseGrad.addColorStop(0.5, '#4A4A3A');
+        fuseGrad.addColorStop(1, '#2A2A1A');
+        ctx.fillStyle = fuseGrad;
         ctx.beginPath();
-        ctx.arc(ex - 8, ey - 4, 4, 0, Math.PI * 2);
+        ctx.moveTo(0, -h * 0.55); // nose
+        ctx.lineTo(w * 0.18, -h * 0.2);
+        ctx.lineTo(w * 0.22, h * 0.3);
+        ctx.lineTo(w * 0.1, h * 0.5);
+        ctx.lineTo(-w * 0.1, h * 0.5);
+        ctx.lineTo(-w * 0.22, h * 0.3);
+        ctx.lineTo(-w * 0.18, -h * 0.2);
+        ctx.closePath();
         ctx.fill();
+        // Fuselage outline
+        ctx.strokeStyle = '#1A1A0A';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        // === Cockpit canopy ===
+        ctx.fillStyle = '#88CCFF';
+        if (!perfMode) {
+            ctx.shadowColor = '#88CCFF';
+            ctx.shadowBlur = 8;
+        }
         ctx.beginPath();
-        ctx.arc(ex + 8, ey - 4, 4, 0, Math.PI * 2);
+        ctx.moveTo(0, -h * 0.42);
+        ctx.quadraticCurveTo(w * 0.08, -h * 0.32, w * 0.06, -h * 0.18);
+        ctx.lineTo(-w * 0.06, -h * 0.18);
+        ctx.quadraticCurveTo(-w * 0.08, -h * 0.32, 0, -h * 0.42);
+        ctx.closePath();
         ctx.fill();
-        // Pupils
-        ctx.fillStyle = '#000000';
-        ctx.beginPath();
-        ctx.arc(ex - 8, ey - 4, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(ex + 8, ey - 4, 1.5, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.strokeStyle = '#224466';
+        ctx.lineWidth = 1;
+        ctx.stroke();
         ctx.shadowBlur = 0;
-        // Mouth
-        ctx.fillStyle = '#330033';
-        ctx.beginPath();
-        ctx.ellipse(ex, ey + 8, 6, 3, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // HP bar
-        if (e.hp !== undefined && e.maxHp !== undefined) {
+
+        // === Wings (wide trapezoid) — SKIP if wings already broke off ===
+        if (!wingsBroken) {
+            // Left wing
+            ctx.fillStyle = '#5A5A4A';
+            ctx.beginPath();
+            ctx.moveTo(-w * 0.15, -h * 0.15);
+            ctx.lineTo(-w * 0.95, -h * 0.05);
+            ctx.lineTo(-w * 0.95, h * 0.05);
+            ctx.lineTo(-w * 0.15, h * 0.2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Right wing
+            ctx.beginPath();
+            ctx.moveTo(w * 0.15, -h * 0.15);
+            ctx.lineTo(w * 0.95, -h * 0.05);
+            ctx.lineTo(w * 0.95, h * 0.05);
+            ctx.lineTo(w * 0.15, h * 0.2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Wing detail panel lines
+            ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+            ctx.lineWidth = 0.8;
+            for (let li = 1; li <= 3; li++) {
+                const xLeft = -w * 0.95 + (w * 0.8 * li / 4);
+                ctx.beginPath();
+                ctx.moveTo(xLeft, -h * 0.05 + (li * 0.01));
+                ctx.lineTo(xLeft, h * 0.05 + (li * 0.01));
+                ctx.stroke();
+                const xRight = w * 0.95 - (w * 0.8 * li / 4);
+                ctx.beginPath();
+                ctx.moveTo(xRight, -h * 0.05 + (li * 0.01));
+                ctx.lineTo(xRight, h * 0.05 + (li * 0.01));
+                ctx.stroke();
+            }
+
+            // === Engines (2x nacelles) on wings ===
+            const engineColor = '#1F1F1F';
+            const engineGlow = '#FF6600';
+            // Left engine
+            ctx.fillStyle = engineColor;
+            ctx.beginPath();
+            ctx.ellipse(-w * 0.55, 0, w * 0.07, h * 0.18, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#0A0A0A';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            // Left engine exhaust glow (PERF: skip shadowBlur under perf mode)
+            ctx.fillStyle = engineGlow;
+            if (!perfMode) { ctx.shadowColor = engineGlow; ctx.shadowBlur = 10; }
+            ctx.beginPath();
+            ctx.ellipse(-w * 0.55, h * 0.15, w * 0.05, h * 0.08, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Right engine
+            ctx.fillStyle = engineColor;
+            ctx.beginPath();
+            ctx.ellipse(w * 0.55, 0, w * 0.07, h * 0.18, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // Right engine exhaust glow
+            ctx.fillStyle = engineGlow;
+            ctx.beginPath();
+            ctx.ellipse(w * 0.55, h * 0.15, w * 0.05, h * 0.08, 0, 0, Math.PI * 2);
+            ctx.fill();
+            if (!perfMode) ctx.shadowBlur = 0;
+
+            // === Tail fin ===
+            ctx.fillStyle = '#3A3A2A';
+            ctx.beginPath();
+            ctx.moveTo(0, h * 0.3);
+            ctx.lineTo(-w * 0.06, h * 0.55);
+            ctx.lineTo(w * 0.06, h * 0.55);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // === Iron cross markings (German bomber style) ===
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(-w * 0.6, -h * 0.02, w * 0.08, h * 0.04);
+            ctx.fillStyle = '#1A1A1A';
+            ctx.fillRect(-w * 0.59, -h * 0.005, w * 0.06, h * 0.01);
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(w * 0.52, -h * 0.02, w * 0.08, h * 0.04);
+            ctx.fillStyle = '#1A1A1A';
+            ctx.fillRect(w * 0.53, -h * 0.005, w * 0.06, h * 0.01);
+
+            // === Wing tip missile pods (visual cue) ===
+            ctx.fillStyle = '#2A2A1A';
+            // Left tip
+            ctx.beginPath();
+            ctx.ellipse(-w * 0.93, h * 0.1, w * 0.04, h * 0.1, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#0A0A0A';
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+            // Right tip
+            ctx.beginPath();
+            ctx.ellipse(w * 0.93, h * 0.1, w * 0.04, h * 0.1, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            // Dying: draw torn wing-stubs where the wing broke off (just the inner root)
+            ctx.fillStyle = '#3A3A2A';
+            ctx.beginPath();
+            ctx.moveTo(-w * 0.15, -h * 0.15);
+            ctx.lineTo(-w * 0.32, -h * 0.05);
+            ctx.lineTo(-w * 0.32, h * 0.05);
+            ctx.lineTo(-w * 0.15, h * 0.2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#0A0A0A';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(w * 0.15, -h * 0.15);
+            ctx.lineTo(w * 0.32, -h * 0.05);
+            ctx.lineTo(w * 0.32, h * 0.05);
+            ctx.lineTo(w * 0.15, h * 0.2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        ctx.restore();
+
+        // === HP bar (above the bomber) ===
+        if (e.hp !== undefined && Math.round(e.maxHp) !== undefined) {
             const hpRatio = Math.max(0, e.hp / e.maxHp);
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillRect(ex - 30, ey - 38, 60, 5);
+            const barW = 60;
+            const barX = ex - barW / 2;
+            const barY = ey - h * 0.5 - 12;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(barX - 1, barY - 1, barW + 2, 5);
             ctx.fillStyle = hpRatio > 0.5 ? '#00FF44' : hpRatio > 0.25 ? '#FFAA00' : '#FF2222';
-            ctx.fillRect(ex - 30, ey - 38, 60 * hpRatio, 5);
+            ctx.fillRect(barX, barY, barW * hpRatio, 3);
+            // PERF: HP text rendered with Math.round for clean integer display
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = 'bold 9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(Math.round(e.hp) + ' / ' + Math.round(e.maxHp), ex, barY - 3);
+            ctx.textAlign = 'left';
         }
     }
 
@@ -4433,12 +6666,8 @@ function drawPlayer() {
         ctx.beginPath();
         ctx.arc(ex, ey, 50, 0, Math.PI * 2);
         ctx.stroke();
-        // Body (dark red)
-        const bodyGrad = ctx.createLinearGradient(ex - 20, ey - 30, ex + 20, ey + 30);
-        bodyGrad.addColorStop(0, '#CC4444');
-        bodyGrad.addColorStop(0.5, '#882222');
-        bodyGrad.addColorStop(1, '#440000');
-        ctx.fillStyle = bodyGrad;
+        // Body (dark red) — PERF: cached gradient
+        ctx.fillStyle = GRAD_CACHE.finalBody;
         ctx.beginPath();
         ctx.moveTo(ex, ey - 30);
         ctx.lineTo(ex + 18, ey - 10);
@@ -4489,131 +6718,342 @@ function drawPlayer() {
         }
     }
 
-    // ===== FINAL BOSS: large ship with detail =====
+    // ===== FINAL BOSS: B-52 inspired heavy bomber (huge wings, only body/tail take damage) =====
     function drawFinalBoss(e) {
+        // ===== STAGE FINAL BOSS — sleek WWII heavy interceptor =====
+        // Long elegant wings (invulnerable), slim tapered fuselage + tail (damageable)
+        // Inspired by P-61 Black Widow / He 219 silhouette: swept wings, twin booms, central gondola
         const ex = e.x, ey = e.y;
-        const pulse = 1 + Math.sin(frameCount * 0.05) * 0.03;
-        // Outer aura
-        const auraGrad = ctx.createRadialGradient(ex, ey, 0, ex, ey, 80 * pulse);
-        auraGrad.addColorStop(0, 'rgba(255, 50, 50, 0.4)');
-        auraGrad.addColorStop(1, 'rgba(255, 50, 50, 0)');
+        const t = frameCount;
+        // When dying, the wings are already detached and falling as separate debris.
+        // Skip drawing the wings on the fuselage so the body looks truly broken.
+        const wingsBroken = !!e.dying;
+
+        // === Threat aura (subtle red glow) ===
+        const auraGrad = ctx.createRadialGradient(ex, ey, 0, ex, ey, 180);
+        auraGrad.addColorStop(0, 'rgba(255, 80, 60, 0.22)');
+        auraGrad.addColorStop(0.6, 'rgba(255, 60, 30, 0.08)');
+        auraGrad.addColorStop(1, 'rgba(255, 40, 20, 0)');
         ctx.fillStyle = auraGrad;
         ctx.beginPath();
-        ctx.arc(ex, ey, 80 * pulse, 0, Math.PI * 2);
+        ctx.arc(ex, ey, 180, 0, Math.PI * 2);
         ctx.fill();
-        // Main hull
-        const hullGrad = ctx.createLinearGradient(ex - 30, ey - 40, ex + 30, ey + 40);
-        hullGrad.addColorStop(0, '#AA3344');
-        hullGrad.addColorStop(0.5, '#661122');
-        hullGrad.addColorStop(1, '#220011');
-        ctx.fillStyle = hullGrad;
-        ctx.beginPath();
-        ctx.moveTo(ex, ey - 40);
-        ctx.lineTo(ex + 30, ey - 20);
-        ctx.lineTo(ex + 35, ey + 20);
-        ctx.lineTo(ex + 20, ey + 35);
-        ctx.lineTo(ex - 20, ey + 35);
-        ctx.lineTo(ex - 35, ey + 20);
-        ctx.lineTo(ex - 30, ey - 20);
-        ctx.closePath();
-        ctx.fill();
-        // Big wings
-        ctx.fillStyle = '#440011';
-        ctx.beginPath();
-        ctx.moveTo(ex - 20, ey - 5);
-        ctx.lineTo(ex - 50, ey + 5);
-        ctx.lineTo(ex - 55, ey + 18);
-        ctx.lineTo(ex - 20, ey + 15);
-        ctx.closePath();
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(ex + 20, ey - 5);
-        ctx.lineTo(ex + 50, ey + 5);
-        ctx.lineTo(ex + 55, ey + 18);
-        ctx.lineTo(ex + 20, ey + 15);
-        ctx.closePath();
-        ctx.fill();
-        // Bridge
-        ctx.fillStyle = '#FFCC00';
-        ctx.beginPath();
-        ctx.ellipse(ex, ey - 8, 6, 12, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // Engine lights (pulsing)
-        const engPulse = Math.sin(frameCount * 0.2) * 0.4 + 0.6;
-        for (let eng = -2; eng <= 2; eng++) {
-            ctx.fillStyle = 'rgba(0, 200, 255, ' + engPulse + ')';
-            ctx.beginPath();
-            ctx.arc(ex + eng * 10, ey + 30, 2, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        // Heavy cannons
-        ctx.fillStyle = '#222222';
-        ctx.fillRect(ex - 45, ey + 8, 8, 4);
-        ctx.fillRect(ex + 37, ey + 8, 8, 4);
-        // Outline
-        ctx.strokeStyle = '#000000';
+
+        // === Long, ROUNDED WINGS (invulnerable) — heavy-bomber silhouette ===
+        // Wings stretch from x: -160 to +160 with a fully rounded tip
+        // (long-bombing-aircraft style). The wing root meets the fuselage
+        // between x = -30..+30. Tip is rounded with quadratic curves on
+        // BOTH upper and lower edges so the silhouette is bulbous at the end
+        // (not a sharp triangle). The wings are visually large but the
+        // hitbox (hitboxBody / hitboxTail) only covers fuselage + tail, so
+        // bullets striking the wing tips deal zero damage.
+        if (!wingsBroken) {
+        ctx.fillStyle = '#2A3038';
+        ctx.strokeStyle = '#0A0A0A';
         ctx.lineWidth = 1;
+        // ---- Left wing ----
+        // Path: root-top → curve out to tip-top → round tip arc → tip-bottom → root-bottom
         ctx.beginPath();
-        ctx.moveTo(ex, ey - 40);
-        ctx.lineTo(ex + 30, ey - 20);
-        ctx.lineTo(ex + 35, ey + 20);
-        ctx.lineTo(ex + 20, ey + 35);
-        ctx.lineTo(ex - 20, ey + 35);
-        ctx.lineTo(ex - 35, ey + 20);
-        ctx.lineTo(ex - 30, ey - 20);
+        ctx.moveTo(ex - 30, ey - 6);   // root top
+        ctx.quadraticCurveTo(ex - 120, ey - 28, ex - 160, ey - 18); // upper edge: sweep back & down to tip-top area
+        ctx.quadraticCurveTo(ex - 175, ey - 8,  ex - 160, ey + 4);  // rounded tip arc (upper→lower)
+        ctx.quadraticCurveTo(ex - 120, ey + 18, ex - 30, ey + 12);  // lower edge: curve back to root bottom
         ctx.closePath();
+        ctx.fill();
         ctx.stroke();
-        // HP bar
+        // ---- Right wing ----
+        ctx.beginPath();
+        ctx.moveTo(ex + 30, ey - 6);
+        ctx.quadraticCurveTo(ex + 120, ey - 28, ex + 160, ey - 18);
+        ctx.quadraticCurveTo(ex + 175, ey - 8,  ex + 160, ey + 4);
+        ctx.quadraticCurveTo(ex + 120, ey + 18, ex + 30, ey + 12);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // === Wing leading edge highlight (silver) — curved to follow new silhouette ===
+        ctx.strokeStyle = '#A8B0B8';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(ex - 30, ey - 6);
+        ctx.quadraticCurveTo(ex - 120, ey - 28, ex - 160, ey - 18);
+        ctx.moveTo(ex + 30, ey - 6);
+        ctx.quadraticCurveTo(ex + 120, ey - 28, ex + 160, ey - 18);
+        ctx.stroke();
+
+        // === Iron cross markings on wings (WWII aesthetic) ===
+        ctx.fillStyle = '#E0E0E0';
+        ctx.fillRect(ex - 80, ey - 10, 4, 1.5);
+        ctx.fillRect(ex - 78.5, ey - 11.5, 0.8, 4);
+        ctx.fillRect(ex + 78, ey - 10, 4, 1.5);
+        ctx.fillRect(ex + 79.5, ey - 11.5, 0.8, 4);
+
+        // === Engine pods on wings (sleek cylinders) ===
+        const engineGlow = (Math.sin(t * 0.25) > 0) ? '#FFD060' : '#FF8030';
+        // Left engine pod
+        ctx.fillStyle = '#1A1F25';
+        ctx.beginPath();
+        ctx.ellipse(ex - 110, ey - 6, 10, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#3A4250';
+        ctx.beginPath();
+        ctx.ellipse(ex - 110, ey - 8, 6, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // exhaust
+        ctx.fillStyle = engineGlow;
+        ctx.beginPath();
+        ctx.ellipse(ex - 110, ey + 10, 4, 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Right engine pod
+        ctx.fillStyle = '#1A1F25';
+        ctx.beginPath();
+        ctx.ellipse(ex + 110, ey - 6, 10, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#3A4250';
+        ctx.beginPath();
+        ctx.ellipse(ex + 110, ey - 8, 6, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = engineGlow;
+        ctx.beginPath();
+        ctx.ellipse(ex + 110, ey + 10, 4, 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+        } // end !wingsBroken
+
+        // === Fuselage (damageable) — sleek tapered cigar shape ===
+        // PERF: cached gradient
+        ctx.fillStyle = GRAD_CACHE.finalFuselage;
+        ctx.beginPath();
+        ctx.moveTo(ex, ey - 18);       // nose (sharp point)
+        ctx.quadraticCurveTo(ex + 18, ey - 10, ex + 22, ey + 0);
+        ctx.lineTo(ex + 20, ey + 20);  // tail end
+        ctx.lineTo(ex - 20, ey + 20);
+        ctx.lineTo(ex - 22, ey + 0);
+        ctx.quadraticCurveTo(ex - 18, ey - 10, ex, ey - 18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#0A0A0A';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // === Cockpit canopy (green-tinted glass) — PERF: cached gradient ===
+        ctx.fillStyle = GRAD_CACHE.finalCanopy;
+        ctx.beginPath();
+        ctx.moveTo(ex - 8, ey - 8);
+        ctx.quadraticCurveTo(ex, ey - 14, ex + 8, ey - 8);
+        ctx.quadraticCurveTo(ex + 7, ey - 1, ex + 4, ey + 2);
+        ctx.lineTo(ex - 4, ey + 2);
+        ctx.quadraticCurveTo(ex - 7, ey - 1, ex - 8, ey - 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+        // canopy highlight
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.beginPath();
+        ctx.moveTo(ex - 4, ey - 10);
+        ctx.quadraticCurveTo(ex - 2, ey - 12, ex + 1, ey - 10);
+        ctx.lineTo(ex - 1, ey - 7);
+        ctx.lineTo(ex - 4, ey - 7);
+        ctx.closePath();
+        ctx.fill();
+
+        // === Tail section (damageable) — slim rear boom — PERF: cached gradient ===
+        // x -10..+10, y +20..+50
+        ctx.fillStyle = GRAD_CACHE.finalTail;
+        ctx.fillStyle = tailGrad;
+        ctx.beginPath();
+        ctx.moveTo(ex - 12, ey + 18);
+        ctx.lineTo(ex - 8, ey + 48);
+        ctx.lineTo(ex + 8, ey + 48);
+        ctx.lineTo(ex + 12, ey + 18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#0A0A0A';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+
+        // === Vertical stabilizer (slim fin) ===
+        ctx.fillStyle = '#2A323E';
+        ctx.beginPath();
+        ctx.moveTo(ex - 2, ey + 18);
+        ctx.lineTo(ex - 6, ey + 50);
+        ctx.lineTo(ex + 6, ey + 50);
+        ctx.lineTo(ex + 2, ey + 18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#0A0A0A';
+        ctx.stroke();
+
+        // === Rear horizontal stabilizer (small wings on tail) ===
+        ctx.fillStyle = '#252B35';
+        ctx.beginPath();
+        ctx.moveTo(ex - 22, ey + 30);
+        ctx.lineTo(ex - 4, ey + 28);
+        ctx.lineTo(ex - 4, ey + 36);
+        ctx.lineTo(ex - 22, ey + 38);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ex + 22, ey + 30);
+        ctx.lineTo(ex + 4, ey + 28);
+        ctx.lineTo(ex + 4, ey + 36);
+        ctx.lineTo(ex + 22, ey + 38);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // === Nose propeller (rotating) ===
+        const propAngle = t * 0.5;
+        ctx.save();
+        ctx.translate(ex, ey - 18);
+        ctx.rotate(propAngle);
+        ctx.fillStyle = 'rgba(180,180,180,0.4)';
+        ctx.fillRect(-14, -1, 28, 2);
+        ctx.fillRect(-1, -14, 2, 28);
+        // propeller hub
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath();
+        ctx.arc(0, 0, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // === Red nose spinner ===
+        ctx.fillStyle = '#CC2020';
+        ctx.beginPath();
+        ctx.arc(ex, ey - 19, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#600';
+        ctx.lineWidth = 0.6;
+        ctx.stroke();
+
+        // === Wing-mounted cannons (on damageable body) ===
+        ctx.fillStyle = '#0A0A0A';
+        ctx.fillRect(ex - 30, ey + 2, 8, 1.5);
+        ctx.fillRect(ex + 22, ey + 2, 8, 1.5);
+        // muzzle tips
+        ctx.fillStyle = '#888';
+        ctx.fillRect(ex - 32, ey + 1, 2, 3);
+        ctx.fillRect(ex + 30, ey + 1, 2, 3);
+
+        // === Belly bomb bay markings (yellow stripes — invites targeting) ===
+        ctx.fillStyle = 'rgba(255, 220, 80, 0.7)';
+        ctx.fillRect(ex - 14, ey + 8, 28, 1);
+        ctx.fillRect(ex - 14, ey + 12, 28, 1);
+
+        // === Navigation lights (blinking) ===
+        const navP = Math.sin(t * 0.3) > 0 ? 1 : 0.3;
+        ctx.fillStyle = 'rgba(255, 30, 30, ' + navP + ')';
+        ctx.beginPath();
+        ctx.arc(ex - 160, ey - 20, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(30, 255, 60, ' + navP + ')';
+        ctx.beginPath();
+        ctx.arc(ex + 160, ey - 20, 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // === Tail rudder stripes (red accent) ===
+        ctx.fillStyle = '#CC2020';
+        ctx.fillRect(ex - 1, ey + 22, 2, 12);
+
+        // === HP bar (wide bar above the wings) ===
         if (e.hp !== undefined && e.maxHp !== undefined) {
             const hpRatio = Math.max(0, e.hp / e.maxHp);
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillRect(ex - 50, ey - 52, 100, 6);
-            ctx.fillStyle = hpRatio > 0.5 ? '#00FF44' : hpRatio > 0.25 ? '#FFAA00' : '#FF2222';
-            ctx.fillRect(ex - 50, ey - 52, 100 * hpRatio, 6);
+            const barW = 220;
+            const barX = ex - barW / 2;
+            const barY = ey - 48;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(barX, barY, barW, 8);
+            const hpColor = hpRatio > 0.5 ? '#00FF66' : hpRatio > 0.25 ? '#FFAA22' : '#FF3333';
+            ctx.fillStyle = hpColor;
+            ctx.fillRect(barX, barY, barW * hpRatio, 8);
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(barX, barY, barW, 8);
+            // Label
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = 'bold 9px "Press Start 2P", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('FINAL BOSS', ex, barY - 4);
         }
     }
-    
-    function drawBullet(bullet, isEnemy) {
+        function drawBullet(bullet, isEnemy) {
         if (!bullet) return;
         if (isEnemy) {
-            // Enemy bullet - red/orange energy orb
+            if (bullet.isBomb) {
+                // ===== B-52 bomb-trail bullet — large aerial bomb silhouette (doubled) =====
+                ctx.save();
+                // Shadow under the bomb
+                ctx.fillStyle = 'rgba(0,0,0,0.35)';
+                ctx.beginPath();
+                ctx.ellipse(bullet.x + 2, bullet.y + 18, 14, 4, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // Bomb casing (oval body) — PERF: cached gradient
+                ctx.fillStyle = GRAD_CACHE.bombBody;
+                ctx.beginPath();
+                ctx.ellipse(bullet.x, bullet.y, 14, 18, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // Bomb band
+                ctx.fillStyle = '#222';
+                ctx.fillRect(bullet.x - 14, bullet.y - 2, 28, 3);
+                // Tail fins
+                ctx.fillStyle = '#444';
+                ctx.beginPath();
+                ctx.moveTo(bullet.x - 14, bullet.y - 12);
+                ctx.lineTo(bullet.x - 22, bullet.y - 16);
+                ctx.lineTo(bullet.x - 18, bullet.y - 4);
+                ctx.closePath();
+                ctx.fill();
+                ctx.beginPath();
+                ctx.moveTo(bullet.x + 14, bullet.y - 12);
+                ctx.lineTo(bullet.x + 22, bullet.y - 16);
+                ctx.lineTo(bullet.x + 18, bullet.y - 4);
+                ctx.closePath();
+                ctx.fill();
+                // Nose fuse (lit)
+                const lit = Math.sin(frameCount * 0.6 + bullet.x * 0.1) * 0.3 + 0.7;
+                ctx.fillStyle = 'rgba(255, 80, 30, ' + lit + ')';
+                ctx.beginPath();
+                ctx.arc(bullet.x, bullet.y - 18, 3.6, 0, Math.PI * 2);
+                ctx.fill();
+                // Outline
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 1.4;
+                ctx.beginPath();
+                ctx.ellipse(bullet.x, bullet.y, 14, 18, 0, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+                return;
+            }
+            // Enemy bullet - vivid red energy orb (PERF: skip shadowBlur in perf mode)
+            // Visuals scaled to match doubled hit-box: outer 8→16, core 3→6, inner 1.5→3
             ctx.save();
-            ctx.shadowColor = "#FF4444";
-            ctx.shadowBlur = 12;
-            // Outer glow
-            const eGrad = ctx.createRadialGradient(bullet.x, bullet.y, 0, bullet.x, bullet.y, 8);
-            eGrad.addColorStop(0, "#FFFFFF");
-            eGrad.addColorStop(0.2, "#FF6666");
-            eGrad.addColorStop(0.6, "#FF2222");
-            eGrad.addColorStop(1, "rgba(255, 0, 0, 0)");
-            ctx.fillStyle = eGrad;
+            if (!perfMode) { ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 14; }
+            // Outer glow (PERF: cached)
+            ctx.fillStyle = GRAD_CACHE.bulletEnemyCore;
             ctx.beginPath();
-            ctx.arc(bullet.x, bullet.y, 8, 0, Math.PI * 2);
+            ctx.arc(bullet.x, bullet.y, 16, 0, Math.PI * 2);
             ctx.fill();
             // Bright core
             ctx.shadowBlur = 0;
-            ctx.fillStyle = "#FFCCCC";
+            ctx.fillStyle = "#FF2200";
+            ctx.beginPath();
+            ctx.arc(bullet.x, bullet.y, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#FFDD44";
             ctx.beginPath();
             ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = "#FFFFFF";
-            ctx.beginPath();
-            ctx.arc(bullet.x, bullet.y, 1.5, 0, Math.PI * 2);
-            ctx.fill();
             ctx.restore();
         } else {
-            // Player bullet - yellow/white energy bolt
+            // Player bullet - yellow/white energy bolt (PERF: skip shadowBlur in perf mode)
             ctx.save();
-            // Outer glow
-            ctx.shadowColor = "#FFEE00";
-            ctx.shadowBlur = 8;
-            // Main laser body
-            const bulletGrad = ctx.createLinearGradient(bullet.x - 3, bullet.y - 8, bullet.x + 3, bullet.y + 8);
-            bulletGrad.addColorStop(0, "#FFFFFF");
-            bulletGrad.addColorStop(0.3, "#FFFF66");
-            bulletGrad.addColorStop(0.7, "#FFAA00");
-            bulletGrad.addColorStop(1, "#FF6600");
-            ctx.fillStyle = bulletGrad;
+            if (!perfMode) { ctx.shadowColor = "#FFEE00"; ctx.shadowBlur = 8; }
+            // Main laser body (PERF: cached)
+            ctx.fillStyle = GRAD_CACHE.bulletCore;
             ctx.beginPath();
             ctx.ellipse(bullet.x, bullet.y, 3, 8, 0, 0, Math.PI * 2);
             ctx.fill();
@@ -4639,14 +7079,13 @@ function drawPlayer() {
             if (!p) continue;
             ctx.save();
             ctx.translate(p.x, p.y);
-            // Outer rotating glow
+            // Outer rotating glow (PERF: skip shadowBlur in perf mode)
             const rotAngle = frameCount * 0.05;
             ctx.rotate(rotAngle);
             // Outer ring
             ctx.strokeStyle = p.color;
             ctx.lineWidth = 2;
-            ctx.shadowColor = p.color;
-            ctx.shadowBlur = 12;
+            if (!perfMode) { ctx.shadowColor = p.color; ctx.shadowBlur = 12; }
             ctx.beginPath();
             ctx.arc(0, 0, 16, 0, Math.PI * 2);
             ctx.stroke();
@@ -4671,15 +7110,14 @@ function drawPlayer() {
             ctx.beginPath();
             ctx.arc(0, 0, 11, 0, Math.PI * 2);
             ctx.stroke();
-            // Letter
+            // Letter (PERF: skip shadowBlur in perf mode)
             ctx.fillStyle = '#FFFFFF';
             ctx.font = 'bold 14px monospace';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.shadowColor = p.color;
-            ctx.shadowBlur = 6;
+            if (!perfMode) { ctx.shadowColor = p.color; ctx.shadowBlur = 6; }
             ctx.fillText(p.type || 'P', 0, 1);
-            ctx.shadowBlur = 0;
+            if (!perfMode) ctx.shadowBlur = 0;
             ctx.restore();
         }
     }
@@ -4691,60 +7129,109 @@ function drawPlayer() {
             ctx.save();
             ctx.translate(d.x, d.y);
             ctx.rotate(d.angle || 0);
-            // Outer glow
-            ctx.shadowColor = '#FF69B4';
-            ctx.shadowBlur = 8;
-            // Body
-            const bodyGrad = ctx.createLinearGradient(-12, -10, 12, 10);
-            bodyGrad.addColorStop(0, '#FF99CC');
-            bodyGrad.addColorStop(0.5, '#FF4488');
-            bodyGrad.addColorStop(1, '#882244');
-            ctx.fillStyle = bodyGrad;
+
+            // Outer pink glow (PERF: skip shadowBlur under perf mode)
+            if (!perfMode) { ctx.shadowColor = '#FF69B4'; ctx.shadowBlur = 6; }
+
+            // === Fuselage (slim propeller fighter body) — PERF: cached gradient ===
+            ctx.fillStyle = GRAD_CACHE.droneBody;
             ctx.beginPath();
-            ctx.moveTo(0, -14);
-            ctx.lineTo(10, -4);
-            ctx.lineTo(12, 8);
-            ctx.lineTo(-12, 8);
-            ctx.lineTo(-10, -4);
+            ctx.moveTo(0, -11);            // nose
+            ctx.lineTo(3, -3);
+            ctx.lineTo(2.5, 7);
+            ctx.lineTo(-2.5, 7);
+            ctx.lineTo(-3, -3);
             ctx.closePath();
             ctx.fill();
-            // Wings
+
+            // === Cockpit canopy === (PERF: skip shadowBlur under perf mode)
+            ctx.fillStyle = '#88DDFF';
+            if (!perfMode) { ctx.shadowColor = '#88DDFF'; ctx.shadowBlur = 5; }
+            ctx.beginPath();
+            ctx.ellipse(0, -3, 2.5, 3.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#224466';
+            ctx.lineWidth = 0.6;
+            ctx.stroke();
+            if (!perfMode) ctx.shadowBlur = 0;
+
+            // === Wings (trapezoid, mid-wing) — PERF: cached gradient ===
+            ctx.fillStyle = GRAD_CACHE.droneWing;
+            // Left wing
+            ctx.beginPath();
+            ctx.moveTo(-2.5, -2);
+            ctx.lineTo(-13, -2);
+            ctx.lineTo(-15, 4);
+            ctx.lineTo(-2.5, 5);
+            ctx.closePath();
+            ctx.fill();
+            // Right wing
+            ctx.beginPath();
+            ctx.moveTo(2.5, -2);
+            ctx.lineTo(13, -2);
+            ctx.lineTo(15, 4);
+            ctx.lineTo(2.5, 5);
+            ctx.closePath();
+            ctx.fill();
+            // Wing outline
+            ctx.strokeStyle = '#661133';
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(-2.5, -2); ctx.lineTo(-13, -2); ctx.lineTo(-15, 4); ctx.lineTo(-2.5, 5); ctx.closePath();
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(2.5, -2); ctx.lineTo(13, -2); ctx.lineTo(15, 4); ctx.lineTo(2.5, 5); ctx.closePath();
+            ctx.stroke();
+
+            // === Pink roundel on wings (identification) ===
+            ctx.fillStyle = '#FFEE00';
+            ctx.beginPath(); ctx.arc(-9, 1, 1.6, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(9, 1, 1.6, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#FF1493';
+            ctx.beginPath(); ctx.arc(-9, 1, 0.8, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(9, 1, 0.8, 0, Math.PI * 2); ctx.fill();
+
+            // === Tail (small vertical fin) ===
             ctx.fillStyle = '#CC3366';
             ctx.beginPath();
-            ctx.moveTo(-6, -2);
-            ctx.lineTo(-18, 0);
-            ctx.lineTo(-20, 4);
-            ctx.lineTo(-6, 6);
+            ctx.moveTo(0, 5);
+            ctx.lineTo(-2, 9);
+            ctx.lineTo(2, 9);
             ctx.closePath();
             ctx.fill();
+
+            // === Spinning propeller (animated) ===
+            const propAngle = (frameCount * 0.5 + i * 1.7) % (Math.PI * 2);
+            ctx.save();
+            ctx.translate(0, -11);
+            ctx.rotate(propAngle);
+            // Propeller blades (drawn as elongated thin shapes)
+            ctx.fillStyle = 'rgba(255, 200, 220, 0.85)';
             ctx.beginPath();
-            ctx.moveTo(6, -2);
-            ctx.lineTo(18, 0);
-            ctx.lineTo(20, 4);
-            ctx.lineTo(6, 6);
-            ctx.closePath();
+            ctx.ellipse(0, 0, 1.2, 7, 0, 0, Math.PI * 2);
             ctx.fill();
-            // Eye (glowing center)
-            ctx.shadowBlur = 0;
-            ctx.fillStyle = '#FFFF00';
             ctx.beginPath();
-            ctx.arc(0, -2, 3, 0, Math.PI * 2);
+            ctx.ellipse(0, 0, 7, 1.2, 0, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = '#FF0000';
+            // Hub
+            ctx.fillStyle = '#FFD700';
             ctx.beginPath();
-            ctx.arc(0, -2, 1.5, 0, Math.PI * 2);
+            ctx.arc(0, 0, 1.2, 0, Math.PI * 2);
             ctx.fill();
-            // Outline
+            ctx.restore();
+
+            // === Fuselage outline ===
             ctx.strokeStyle = '#440022';
             ctx.lineWidth = 0.5;
             ctx.beginPath();
-            ctx.moveTo(0, -14);
-            ctx.lineTo(10, -4);
-            ctx.lineTo(12, 8);
-            ctx.lineTo(-12, 8);
-            ctx.lineTo(-10, -4);
+            ctx.moveTo(0, -11);
+            ctx.lineTo(3, -3);
+            ctx.lineTo(2.5, 7);
+            ctx.lineTo(-2.5, 7);
+            ctx.lineTo(-3, -3);
             ctx.closePath();
             ctx.stroke();
+
             ctx.restore();
         }
     }
@@ -5081,45 +7568,102 @@ function drawPlayer() {
         }
     }
         function drawUI() {
-        // Top bar background
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-        ctx.fillRect(0, 0, GAME_WIDTH, 30);
-        // Score
-        ctx.fillStyle = '#FFD700';
-        ctx.font = 'bold 14px monospace';
+        // Top bar — semi-transparent dark panel with subtle amber border
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+        ctx.fillRect(0, 0, GAME_WIDTH, 34);
+        ctx.fillStyle = 'rgba(255, 180, 60, 0.35)';
+        ctx.fillRect(0, 33, GAME_WIDTH, 1);
+
+        // Wave announce text — shown for ~1.5s after each sub-wave starts
+        if (waveAnnounceTimer > 0 && waveAnnounceText) {
+            const t = waveAnnounceTimer / WAVE_FLASH_DURATION;
+            // Fade in 0..0.3, hold, fade out 0.7..1
+            let alpha = 1;
+            if (t > 0.7) alpha = (1 - t) / 0.3;
+            else if (t < 0.3) alpha = t / 0.3;
+            alpha = Math.max(0, Math.min(1, alpha));
+            const pulse = 1 + (1 - t) * 0.08;
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.font = 'bold ' + Math.floor(22 * pulse) + 'px "Press Start 2P", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#000';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+            ctx.shadowBlur = 6;
+            // shadow
+            ctx.fillText(waveAnnounceText, GAME_WIDTH / 2 + 2, 70 + 2);
+            ctx.fillStyle = '#FFD24A';
+            ctx.fillText(waveAnnounceText, GAME_WIDTH / 2, 70);
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#FFEEAA';
+            ctx.font = 'bold 9px "Press Start 2P", monospace';
+            ctx.fillText('NEXT AREA ' + currentStage + '-' + Math.min(stageWave + 1, STAGE_WAVES), GAME_WIDTH / 2, 92);
+            ctx.restore();
+        }
+
+        // Score (gold)
+        ctx.fillStyle = '#FFD24A';
+        ctx.font = 'bold 16px "Press Start 2P", monospace';
         ctx.textAlign = 'left';
-        ctx.shadowColor = '#000000';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
         ctx.shadowBlur = 4;
-        ctx.fillText('1P  ' + score.toString().padStart(8, '0'), 10, 20);
-        // High score
-        ctx.fillStyle = '#FF8800';
-        ctx.fillText('HI  ' + highScore.toString().padStart(8, '0'), 170, 20);
-        // Stage
-        ctx.fillStyle = '#00FF88';
+        ctx.fillText('1P ' + score.toString().padStart(8, '0'), 12, 22);
+        // High score (orange-red)
+        ctx.fillStyle = '#FF7043';
+        ctx.fillText('HI ' + highScore.toString().padStart(8, '0'), 188, 22);
+        // Stage (cyan-green)
+        ctx.fillStyle = '#4DE0B6';
         ctx.textAlign = 'right';
-        ctx.fillText('STAGE ' + currentStage, GAME_WIDTH - 10, 20);
+        ctx.fillText('STAGE ' + currentStage, GAME_WIDTH - 12, 22);
         ctx.shadowBlur = 0;
 
-        // Lives
-        ctx.fillStyle = '#FFFFFF';
+        // Lives — mini P-40 silhouette icons
         ctx.textAlign = 'left';
-        for (let i = 0; i < player.lives; i++) {
-            ctx.fillStyle = '#1E90FF';
+        ctx.font = 'bold 10px "Press Start 2P", monospace';
+        ctx.fillStyle = '#A8C5E0';
+        ctx.fillText('LIVES', 12, 48);
+        for (let i = 0; i < Math.min(player.lives, 5); i++) {
+            const lx = 60 + i * 16;
+            const ly = 48;
+            // Mini plane icon (dark silhouette)
+            ctx.fillStyle = '#1A3550';
+            // Body
             ctx.beginPath();
-            ctx.moveTo(10 + i * 18, 42);
-            ctx.lineTo(16 + i * 18, 50);
-            ctx.lineTo(13 + i * 18, 50);
-            ctx.lineTo(13 + i * 18, 56);
-            ctx.lineTo(7 + i * 18, 56);
-            ctx.lineTo(7 + i * 18, 50);
-            ctx.lineTo(4 + i * 18, 50);
+            ctx.moveTo(lx, ly - 5);
+            ctx.lineTo(lx + 2, ly - 1);
+            ctx.lineTo(lx + 2, ly + 4);
+            ctx.lineTo(lx - 2, ly + 4);
+            ctx.lineTo(lx - 2, ly - 1);
             ctx.closePath();
             ctx.fill();
+            // Wings
+            ctx.fillRect(lx - 7, ly, 14, 2);
+            // Tail
+            ctx.fillRect(lx - 2, ly + 4, 4, 2);
+            // Red roundel
+            ctx.fillStyle = '#CC0000';
+            ctx.fillRect(lx - 5, ly + 0.5, 2, 1);
+            ctx.fillRect(lx + 3, ly + 0.5, 2, 1);
         }
-        // Bombs
-        ctx.fillStyle = '#FF8C00';
-        ctx.font = 'bold 12px monospace';
-        ctx.fillText('B: ' + player.bombs, 100, 52);
+
+        // Bombs — orange bomb icon + count
+        ctx.fillStyle = '#FFB347';
+        ctx.font = 'bold 10px "Press Start 2P", monospace';
+        ctx.fillText('BOMB', 160, 48);
+        for (let i = 0; i < Math.min(player.bombs, 5); i++) {
+            const bx = 200 + i * 12;
+            // Mini bomb (round body + fuse)
+            ctx.fillStyle = '#2A2A2A';
+            ctx.beginPath();
+            ctx.arc(bx, 50, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#FF7043';
+            ctx.fillRect(bx - 0.5, 44, 1, 3);
+            ctx.fillStyle = '#FFD24A';
+            ctx.beginPath();
+            ctx.arc(bx, 43, 1, 0, Math.PI * 2);
+            ctx.fill();
+        }
 
         // Combo
         if (comboCount >= 2 && comboTimer > 0) {
@@ -5139,32 +7683,33 @@ function drawPlayer() {
             ctx.shadowBlur = 0;
             ctx.restore();
         }
-        // Max combo
+        // Max combo (bottom-right)
         if (maxCombo > 0) {
-            ctx.fillStyle = '#AAAAAA';
-            ctx.font = '10px monospace';
+            ctx.fillStyle = '#888888';
+            ctx.font = 'bold 9px "Press Start 2P", monospace';
             ctx.textAlign = 'right';
-            ctx.fillText('MAX ' + maxCombo + 'x', GAME_WIDTH - 10, 50);
+            ctx.fillText('MAX ' + maxCombo + 'x', GAME_WIDTH - 12, GAME_HEIGHT - 50);
         }
 
-        // Wave indicator
+        // Wave indicator (centered banner)
         if (stageTimer < 120 && stageWave) {
-            ctx.fillStyle = 'rgba(255, 255, 255, ' + (1 - stageTimer / 120) + ')';
-            ctx.font = 'bold 24px monospace';
+            const alpha = Math.min(1, stageTimer < 60 ? (stageTimer / 60) : (1 - (stageTimer - 60) / 60));
+            ctx.fillStyle = 'rgba(255, 255, 255, ' + alpha + ')';
+            ctx.font = 'bold 22px "Press Start 2P", monospace';
             ctx.textAlign = 'center';
-            ctx.shadowColor = '#00FFFF';
-            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#00D9FF';
+            ctx.shadowBlur = 12;
             ctx.fillText('WAVE ' + stageWave, GAME_WIDTH / 2, 150);
             ctx.shadowBlur = 0;
         }
 
         // Boss HP bar
-        const boss = enemies.find(e => e && (e.isFinalBoss || e.isMidBoss || e.isWaveBoss || e.type === 'final' || e.type === 'heart' || e.type === 'octopus' || e.type === 'waveBoss' || e.type === 'wave_boss'));
+        const boss = enemies.find(e => e && (e.isFinalBoss || e.isMidBoss || e.isWaveBoss || e.type === 'final' || e.type === 'heavyBomber' || e.type === 'waveBoss' || e.type === 'wave_boss'));
         if (boss && boss.hp !== undefined && boss.maxHp !== undefined) {
             const hpRatio = Math.max(0, boss.hp / boss.maxHp);
             const barW = 300;
             const barX = (GAME_WIDTH - barW) / 2;
-            const barY = 50;
+            const barY = 110;
             // Bar background
             ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
             ctx.fillRect(barX - 2, barY - 2, barW + 4, 14);
@@ -5181,7 +7726,7 @@ function drawPlayer() {
             ctx.textAlign = 'center';
             ctx.shadowColor = '#000000';
             ctx.shadowBlur = 3;
-            ctx.fillText(Math.ceil(boss.hp) + ' / ' + boss.maxHp, GAME_WIDTH / 2, barY + 8);
+            ctx.fillText(Math.round(boss.hp) + ' / ' + Math.round(boss.maxHp), GAME_WIDTH / 2, barY + 8);
             ctx.shadowBlur = 0;
         }
 
@@ -5211,18 +7756,7 @@ function drawPlayer() {
             ctx.fillText('PWR ' + player.powerLevel, 10, 70);
         }
 
-        // Score popup
-        ctx.textAlign = 'center';
-        ctx.font = 'bold 12px monospace';
-        for (let i = 0; i < scorePopups.length; i++) {
-            const sp = scorePopups[i];
-            if (!sp) continue;
-            ctx.fillStyle = 'rgba(255, 255, 100, ' + (sp.timer / 60) + ')';
-            ctx.shadowColor = '#000000';
-            ctx.shadowBlur = 3;
-            ctx.fillText('+' + sp.value, sp.x, sp.y - (60 - sp.timer) * 0.5);
-            ctx.shadowBlur = 0;
-        }
+        // (scorePopups dead code removed — was causing ReferenceError every frame)
     }
     
     function drawTitleScreen() {
@@ -5389,6 +7923,12 @@ function drawPlayer() {
                 if (_en) { try { drawEnemy(_en); } catch(e) {} }
             }
 
+            // Detached boss wing debris (drawn between enemies and explosions so smoke overlays it)
+            try { drawBossWingDebris(); } catch(e) { console.error('drawBossWingDebris:', e.message); }
+
+            // === FINAL BOSS INTRO (2026-09): escort caption (small, drawn under UI) ===
+            try { drawBossEscortLabel(); } catch(e) { console.error('drawBossEscortLabel:', e.message); }
+
             // Explosions — drawExplosion iterates all particles internally
             try { drawExplosion(); } catch(e) {}
 
@@ -5523,6 +8063,10 @@ function drawPlayer() {
 
             // UI (drawn outside the save/restore so it's not affected by shake)
             try { drawUI(); } catch(e) { console.error('drawUI:', e.message); }
+
+            // === FINAL BOSS INTRO (2026-09): red siren overlay (full screen) ===
+            // Drawn after drawUI so the warning text reads clearly on top of HUD.
+            try { drawBossSirenOverlay(); } catch(e) { console.error('drawBossSirenOverlay:', e.message); }
 
         } else if (gameState === GameState.PAUSED) {
             try { drawPauseScreen(); } catch(e) { console.error('drawPauseScreen:', e.message); }
