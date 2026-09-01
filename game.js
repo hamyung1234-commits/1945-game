@@ -693,6 +693,19 @@ let stars = [];
 // === BOSS DESTRUCTION: detached wing debris (separate physics objects) ===
 let bossWingDebris = [];
 
+// === MOOK DESTRUCTION: small detached wing/body debris for regular enemies ===
+// Same concept as bossWingDebris but scaled down for scouts/fighters/bombers so
+// kills feel impactful (small chunks that detach + fall with gravity) without
+// the multi-stage cascade reserved for the mid-boss.
+let enemyDebris = [];
+
+// === PLAYER DESTRUCTION: detached wing/body debris for the player's plane ===
+// Same idea as enemyDebris but with player colors + larger chunks. The existing
+// playerHit() already emits a fire/smoke/spark cluster (small explosion) but
+// without an actual rotating wing piece the death reads as "smoke puff" rather
+// than "plane broke apart". The playerDebris array fills that gap.
+let playerDebris = [];
+
 // Background stars
 for (let i = 0; i < 100; i++) {
     stars.push({
@@ -1022,6 +1035,7 @@ function startGame() {
     bossActive = false;
     bossSpawned = false;
     bossWaveNumber = 0;
+    bossIsFinalBoss = false;  // (2026-09 bugfix) Reset on new game
     bossClaws = [];
     bossClawCount = 1;
     wave = 1;  // keep wave for compatibility with existing code that reads it
@@ -1062,6 +1076,7 @@ function startGame() {
     bossActive = false;
     bossDefeated = false;
     bossWaveNumber = 0;
+    bossIsFinalBoss = false;  // (2026-09 bugfix) Reset on game restart
     midBossStreak = 0;
     bossClawCount = 1;
     bossClaws = [];
@@ -1188,24 +1203,62 @@ function buildGradCache() {
     pCanopy.addColorStop(1, '#3aa0d0');
     GRAD_CACHE.playerCanopy = pCanopy;
 
-    // Scout enemy (small fighter)
+    // === Scout enemy — A6M Zero inspired (light grey-green IJN camo) ===
     const sWing = ctx.createLinearGradient(-20, 0, 20, 0);
-    sWing.addColorStop(0, '#661111');
-    sWing.addColorStop(0.5, '#AA2222');
-    sWing.addColorStop(1, '#661111');
+    sWing.addColorStop(0, '#7C8E78');
+    sWing.addColorStop(0.5, '#B6C7B0');
+    sWing.addColorStop(1, '#5A6E58');
     GRAD_CACHE.scoutWing = sWing;
 
     const sBody = ctx.createLinearGradient(-5, -16, 5, 12);
-    sBody.addColorStop(0, '#FF6644');
-    sBody.addColorStop(0.5, '#CC2222');
-    sBody.addColorStop(1, '#661111');
+    sBody.addColorStop(0, '#D4D8C2');
+    sBody.addColorStop(0.5, '#9CA68C');
+    sBody.addColorStop(1, '#4F5C44');
     GRAD_CACHE.scoutBody = sBody;
 
     const sCanopy = ctx.createLinearGradient(0, -10, 0, -2);
-    sCanopy.addColorStop(0, '#5ce0ff');
-    sCanopy.addColorStop(0.5, '#a0f0ff');
-    sCanopy.addColorStop(1, '#3aa0d0');
+    sCanopy.addColorStop(0, '#8AE0FF');
+    sCanopy.addColorStop(0.5, '#BCF0FF');
+    sCanopy.addColorStop(1, '#3A88B8');
     GRAD_CACHE.scoutCanopy = sCanopy;
+
+    // === Fighter enemy — P-40 Warhawk inspired (olive drab USAAC camo) ===
+    const ftrWing = ctx.createLinearGradient(-22, 0, 22, 0);
+    ftrWing.addColorStop(0, '#3F4720');
+    ftrWing.addColorStop(0.5, '#6E7A38');
+    ftrWing.addColorStop(1, '#2E3418');
+    GRAD_CACHE.fighterWing = ftrWing;
+
+    const ftrBody = ctx.createLinearGradient(-6, -16, 6, 12);
+    ftrBody.addColorStop(0, '#8B7A38');
+    ftrBody.addColorStop(0.5, '#6E5E20');
+    ftrBody.addColorStop(1, '#3A3210');
+    GRAD_CACHE.fighterBody = ftrBody;
+
+    const ftrCanopy = ctx.createLinearGradient(0, -10, 0, -2);
+    ftrCanopy.addColorStop(0, '#9CE6FF');
+    ftrCanopy.addColorStop(0.5, '#D0F4FF');
+    ftrCanopy.addColorStop(1, '#2E78A8');
+    GRAD_CACHE.fighterCanopy = ftrCanopy;
+
+    // === Bomber enemy — twin-engine heavy (P-38 / Mosquito style) ===
+    const bWing = ctx.createLinearGradient(-30, 0, 30, 0);
+    bWing.addColorStop(0, '#5C6A78');
+    bWing.addColorStop(0.5, '#9CA8B4');
+    bWing.addColorStop(1, '#404A56');
+    GRAD_CACHE.bomberWing = bWing;
+
+    const bBody = ctx.createLinearGradient(-8, -22, 8, 16);
+    bBody.addColorStop(0, '#C8CED4');
+    bBody.addColorStop(0.5, '#8E98A4');
+    bBody.addColorStop(1, '#404858');
+    GRAD_CACHE.bomberBody = bBody;
+
+    const bCanopy = ctx.createLinearGradient(0, -10, 0, -2);
+    bCanopy.addColorStop(0, '#9CE6FF');
+    bCanopy.addColorStop(0.5, '#D0F4FF');
+    bCanopy.addColorStop(1, '#2E78A8');
+    GRAD_CACHE.bomberCanopy = bCanopy;
 
     // Heavy bomber mid-boss
     const hWing = ctx.createLinearGradient(-28, 0, 28, 0);
@@ -1587,10 +1640,58 @@ function spawnEnemy() {
         const fallbackTypes = ['scout', 'fighter', 'bomber', 'rammer'];
         type = fallbackTypes[Math.floor(Math.random() * fallbackTypes.length)];
     }
-    
+
+    // === SPAWN PATH (2026-09) ===
+    // Distribution: scout ~80% top / 10% left / 10% right (mostly top-down rush)
+    // fighter ~40% top / 30% left / 30% right (mix — fighters sweep in)
+    // bomber  ~10% top / 45% left / 45% right (twin-engines sweep in from edges)
+    // rammer  ~100% top (chase behavior)
+    // 'side' is one of: 'top', 'left', 'right'
+    // 'sweep' = true means the enemy follows a curve (left/right spawns) instead of straight down.
+    let side = 'top';
+    let sweep = false;
+    if (type === 'bomber') {
+        const r = Math.random();
+        if (r < 0.10) side = 'top';
+        else if (r < 0.55) side = 'left';
+        else side = 'right';
+        sweep = (side !== 'top');
+    } else if (type === 'fighter') {
+        const r = Math.random();
+        if (r < 0.40) side = 'top';
+        else if (r < 0.70) side = 'left';
+        else side = 'right';
+        sweep = (side !== 'top');
+    } else if (type === 'scout') {
+        const r = Math.random();
+        if (r < 0.80) side = 'top';
+        else if (r < 0.90) side = 'left';
+        else side = 'right';
+        sweep = (side !== 'top');
+    } else if (type === 'rammer') {
+        side = 'top';
+        sweep = false;
+    }
+
+    // Initial position depending on spawn side.
+    // - top:   x = random, y = -50 (classic)
+    // - left:  x = -50, y = random in upper third
+    // - right: x = GAME_WIDTH + 50, y = random in upper third
+    let startX, startY;
+    if (side === 'top') {
+        startX = Math.random() * (GAME_WIDTH - 60) + 30;
+        startY = -50;
+    } else if (side === 'left') {
+        startX = -50;
+        startY = 40 + Math.random() * 180;
+    } else { // right
+        startX = GAME_WIDTH + 50;
+        startY = 40 + Math.random() * 180;
+    }
+
     let enemy = {
-        x: Math.random() * (GAME_WIDTH - 60) + 30,
-        y: -50,
+        x: startX,
+        y: startY,
         width: 40,
         height: 40,
         type: type,
@@ -1600,7 +1701,29 @@ function spawnEnemy() {
         score: 100,
         shootCooldown: Math.random() * 60 + 30,
         angle: 0,
-        phase: Math.random() * Math.PI * 2
+        phase: Math.random() * Math.PI * 2,
+        _spawnSide: side,
+        _sweep: sweep,
+        // _sweepPhase drives the sine-wave horizontal offset during a sweep entry.
+        _sweepPhase: Math.random() * Math.PI * 2,
+        // _sweepDir: -1 for "coming from left going right", +1 for "coming from right going left".
+        _sweepDir: (side === 'left') ? 1 : (side === 'right' ? -1 : 0),
+        // _sweepBaseX is the central x the sine oscillates around as the plane sweeps across.
+        _sweepBaseX: (side === 'left') ? -50 : (side === 'right' ? GAME_WIDTH + 50 : 0),
+        // === ORBIT (2026-09) ===
+        // After sweep entry, mooks that entered from a side transition into an
+        // orbital strafing run around the player rather than falling straight
+        // down. Each plane keeps a stable orbital radius and angular speed so
+        // multiple mooks visually spread out around the player instead of
+        // stacking on top of each other.
+        _orbitActive: false,
+        _orbitAngle: 0,           // current angle around the player (radians)
+        _orbitRadius: 0,          // distance from player center
+        _orbitAngularSpeed: 0,    // radians per frame (~0.04 ≈ 1.5s per loop)
+        _orbitDir: 1,             // +1 clockwise (player POV), -1 counter-clockwise
+        _orbitLifetime: 0,        // frames remaining in orbit before exiting
+        _orbitMaxLifetime: 240,   // 4 seconds @ 60fps baseline
+        _orbitExitDir: 1          // -1 = exit up the top, +1 = exit down the bottom
     };
     
     switch (type) {
@@ -1609,13 +1732,24 @@ function spawnEnemy() {
             enemy.maxHp = 1;
             enemy.speed = ENEMY_BASE_SPEED + Math.random();
             enemy.score = 100;
-            enemy.width = 36;
-            enemy.height = 36;
+            enemy.width = 60;
+            enemy.height = 60;
+            enemy.drawScale = 1.7;
+            // Sweep scouts come in faster (sweeping attack run feel)
+            if (enemy._sweep) enemy.speed *= 1.15;
+            // Orbit: scouts circle briefly (~2.5s) before peeling off
+            if (enemy._sweep) {
+                enemy._orbitMaxLifetime = 150;
+                enemy._orbitAngularSpeed = 0.055;
+            }
             break;
         case 'heavyBomber':
             // Heavy bomber mid-boss (replaces octopus) - aerial, slow, fires homing missiles from both wings
             enemy.isMidBoss = true; // CRITICAL: required for dying-fall to trigger on kill
             enemy.isHeavyBomber = true;
+            // (2026-09 bugfix) Clear bossIsFinalBoss flag — this spawn is a MID-boss, not final.
+            // Without this, the flag leaks across stages once a final boss has ever appeared.
+            bossIsFinalBoss = false;
             enemy.hp = Math.round((((3 + currentStage * 3) * 0.7) + 2) * 3.2); // +220% tankier than baseline (1.6× + additional 100%)
             enemy.maxHp = enemy.hp;
             enemy.speed = 0.4 + currentStage * 0.05;
@@ -1634,17 +1768,34 @@ function spawnEnemy() {
             enemy.maxHp = 2;
             enemy.speed = ENEMY_BASE_SPEED * 0.8;
             enemy.score = 200;
-            enemy.width = 44;
-            enemy.height = 44;
+            enemy.width = 72;
+            enemy.height = 72;
+            enemy.drawScale = 1.7;
+            // Sweep fighters slightly faster and add a wider swing
+            if (enemy._sweep) enemy.speed *= 1.10;
+            // Orbit: fighters circle for ~4s at moderate radius (mid-strafe run)
+            if (enemy._sweep) {
+                enemy._orbitMaxLifetime = 240;
+                enemy._orbitAngularSpeed = 0.042;
+            }
             break;
         case 'bomber':
             enemy.hp = 3;
             enemy.maxHp = 3;
             enemy.speed = ENEMY_BASE_SPEED * 0.5;
             enemy.score = 300;
-            enemy.width = 52;
-            enemy.height = 52;
+            enemy.width = 86;
+            enemy.height = 86;
+            enemy.drawScale = 1.7;
             enemy.shootCooldown = 120;
+            // Twin-engine bombers always sweep in from the edges (rare top spawn already handled)
+            if (enemy._sweep) enemy.speed *= 1.05;
+            // Orbit: bombers (twin-engine heavies) circle longest (~5.5s) — they
+            // are the slow, menacing strafers and should linger around the player
+            if (enemy._sweep) {
+                enemy._orbitMaxLifetime = 330;
+                enemy._orbitAngularSpeed = 0.032;
+            }
             break;
         case 'boss':
             // Legacy alias → unified to heavyBomber design (long bomber silhouette)
@@ -1821,6 +1972,15 @@ function updateBossIntro() {
             enemies = enemies.filter(e => !e.markRemove);
         }
 
+        // === (2026-09) Decay entry-invulnerability timer on all enemies. ===
+        // Once it hits zero the boss takes damage normally. Decrement every frame
+        // (cheap — short loop) so the window is measured in real frames, not game
+        // events.
+        for (let i = 0; i < enemies.length; i++) {
+            const ee = enemies[i];
+            if (ee && ee.entryInvuln && ee.entryInvuln > 0) ee.entryInvuln--;
+        }
+
         // Count remaining escorts
         let remain = 0;
         for (let j = 0; j < enemies.length; j++) {
@@ -1847,7 +2007,12 @@ function spawnFinalBoss() {
         bossSpawned = true;
         return;
     }
-    enemies.push(Object.assign({}, bossPendingPayload));
+    const payload = Object.assign({}, bossPendingPayload);
+    // (2026-09) Grant a short post-entry invulnerability window so the player
+    // sees the B-52 slide in fully before combat begins. P5 players were
+    // burning half the boss HP while the body was still entering the screen.
+    payload.entryInvuln = 90;  // ~1.5s @ 60fps
+    enemies.push(payload);
     bossPendingPayload = null;
     bossIntroPhase = 'spawn';
     bossSpawned = true;
@@ -1918,10 +2083,474 @@ function drawBossEscortLabel() {
     ctx.restore();
 }
 
+// === MOOK DESTRUCTION: Spawn small detached wing/body chunks for regular enemies ===
+// Builds a small debris cloud (left wing, right wing, fuselage chunk) that
+// tumbles with gravity + drag, drawn separately so the kill feels like the
+// aircraft is breaking apart rather than just popping. Scale-aware so heavier
+// mooks (fighter/bomber) produce slightly larger pieces than scouts.
+// Also throws a small shockwave + 4 sparks + tiny screen shake for impact.
+function createEnemyDebris(enemy) {
+    if (!enemy) return;
+    // Cap concurrent debris to avoid piling up if a screen-full of mooks die
+    // simultaneously. Oldest pieces (front of array) get culled first.
+    var softCap = 70;
+    while (enemyDebris.length > softCap) enemyDebris.shift();
+
+    var baseX = enemy.x;
+    var baseY = enemy.y;
+    // Scale by enemy type — bombers are larger than scouts. Boosted in 2026-09:
+    // previous sizes (10/11.5/14) read as "tiny specks" rather than wing chunks,
+    // so the impact was easy to miss. New sizes (16/19/22) match the actual
+    // enemy wing extents.
+    var sizeMul = 1.5;
+    var t = enemy.type;
+    if (t === 'bomber') sizeMul = 2.1;
+    else if (t === 'fighter') sizeMul = 1.75;
+
+    // Pick a brighter wing color scheme per type so the debris reads against the
+    // bright sky background. (Previous #5A1A1A/#300000 was almost black on blue.)
+    var wingFill, wingStroke, wingAccent;
+    if (t === 'bomber') {
+        wingFill = '#9AA0A8'; wingStroke = '#2A2F38'; wingAccent = '#FFD700';
+    } else if (t === 'fighter') {
+        wingFill = '#7A8B3A'; wingStroke = '#2E3614'; wingAccent = '#FFD700';
+    } else {
+        wingFill = '#C8CDD2'; wingStroke = '#2A2F38'; wingAccent = '#FFD700';
+    }
+
+    // LEFT WING — slab, kicked outward to the left
+    enemyDebris.push({
+        x: baseX - 6, y: baseY + 1,
+        vx: -4.6 + (Math.random() - 0.5) * 1.8,
+        vy: -2.6 + Math.random() * 1.0,
+        rotSpeed: -0.32 + (Math.random() - 0.5) * 0.14,
+        angle: 0,
+        side: 'left',
+        size: Math.round(17 * sizeMul),
+        life: 200,
+        colorA: wingFill, colorB: wingStroke, accent: wingAccent
+    });
+    // RIGHT WING — mirror
+    enemyDebris.push({
+        x: baseX + 6, y: baseY + 1,
+        vx: 4.6 + (Math.random() - 0.5) * 1.8,
+        vy: -2.6 + Math.random() * 1.0,
+        rotSpeed: 0.32 + (Math.random() - 0.5) * 0.14,
+        angle: 0,
+        side: 'right',
+        size: Math.round(17 * sizeMul),
+        life: 200,
+        colorA: wingFill, colorB: wingStroke, accent: wingAccent
+    });
+    // FUSELAGE CHUNK — small triangle that spins in place and falls faster
+    enemyDebris.push({
+        x: baseX, y: baseY + 2,
+        vx: (Math.random() - 0.5) * 2.4,
+        vy: -3.0 + Math.random() * 0.9,
+        rotSpeed: 0.36 + (Math.random() - 0.5) * 0.16,
+        angle: 0,
+        side: 'body',
+        size: Math.round(14 * sizeMul),
+        life: 175,
+        colorA: wingFill, colorB: wingStroke, accent: '#FFCC44'
+    });
+    // TAIL / OUTER-PANEL SHARDS (2026-09) — two extra smaller chunks flung on a
+    // wide arc so the break-up reads as "the plane came apart", matching the
+    // player-death scatter the user confirmed as the target feel.
+    for (var sh2 = 0; sh2 < 2; sh2++) {
+        var sdir = sh2 === 0 ? -1 : 1;
+        enemyDebris.push({
+            x: baseX + sdir * 3, y: baseY + 4,
+            vx: sdir * (2.4 + Math.random() * 2.2),
+            vy: -3.4 + Math.random() * 1.2,
+            rotSpeed: sdir * (0.40 + Math.random() * 0.18),
+            angle: 0,
+            side: sdir < 0 ? 'left' : 'right',
+            size: Math.round(10 * sizeMul),
+            life: 150,
+            colorA: wingFill, colorB: wingStroke, accent: wingAccent
+        });
+    }
+    // (2026-09) Extra COCKPIT/NOSE chunk — small bright wedge that tumbles off
+    // the front of the plane. Adds a 6th piece so the destruction count feels
+    // chunky rather than a 3-piece "pop".
+    enemyDebris.push({
+        x: baseX, y: baseY - 8,
+        vx: (Math.random() - 0.5) * 3.0,
+        vy: -3.6 + Math.random() * 0.6,
+        rotSpeed: (Math.random() - 0.5) * 0.45,
+        angle: 0,
+        side: 'nose',
+        size: Math.round(9 * sizeMul),
+        life: 160,
+        colorA: '#FFE680', colorB: wingStroke, accent: '#FFCC44'
+    });
+
+    // Spark cluster at the wing-break points — more sparks (8) so the impact
+    // flashes briefly.
+    if (typeof explosions !== 'undefined') {
+        for (var si = 0; si < 16; si++) {
+            var sa = Math.random() * Math.PI * 2;
+            var ss = 2.6 + Math.random() * 3.4;
+            explosions.push({
+                x: baseX, y: baseY,
+                vx: Math.cos(sa) * ss, vy: Math.sin(sa) * ss,
+                life: 1.0, decay: 0.045,
+                size: 2.2 + Math.random() * 2.6,
+                color: si < 8 ? '#FFAA44' : '#FFDD66', type: 'spark', gravity: 0.05
+            });
+        }
+        // Shockwave ring — slightly larger so it reads at the new debris scale.
+        explosions.push({
+            x: baseX, y: baseY, vx: 0, vy: 0,
+            life: 1.0, decay: 0.045, size: 0, maxSize: 70 + sizeMul * 16,
+            color: 'rgba(255,180,90,0.8)', type: 'shockwave', gravity: 0
+        });
+    }
+
+    // Small screen shake — kept low so it's punchy without being disruptive when
+    // many mooks die at once (e.g. bomb chain). Heavier mooks shake slightly more.
+    if (typeof screenShake !== 'undefined') {
+        var sAmt = enemy.type === 'bomber' ? 4 : (enemy.type === 'fighter' ? 3 : 2);
+        screenShake = Math.max(screenShake, sAmt);
+        if (typeof screenShakeIntensity !== 'undefined') {
+            screenShakeIntensity = Math.max(screenShakeIntensity, sAmt > 3 ? 2 : 1);
+        }
+    }
+}
+
+// Physics tick for enemyDebris — gravity + drag + spin, splice when expired/off-screen.
+// Mirrors the bossWingDebris update at lines 3584-3619 but with weaker gravity and
+// shorter life so chunks clear quickly and don't accumulate during chaotic waves.
+function updateEnemyDebris() {
+    for (var di = enemyDebris.length - 1; di >= 0; di--) {
+        var d = enemyDebris[di];
+        if (!d) continue;
+        d.vy += 0.14;       // gravity — stronger than boss wings so they fall fast
+        d.vx *= 0.992;      // mild air drag
+        d.x += d.vx;
+        d.y += d.vy;
+        d.angle += d.rotSpeed;
+        d.life--;
+        // Occasional small smoke wisp off the chunk so it visually "smolders"
+        if (d.life % 5 === 0 && typeof explosions !== 'undefined' && explosions.length < (typeof MAX_PARTICLES !== 'undefined' ? MAX_PARTICLES - 4 : 100)) {
+            explosions.push({
+                x: d.x + (Math.random() - 0.5) * 4,
+                y: d.y + (Math.random() - 0.5) * 4,
+                vx: (Math.random() - 0.5) * 0.25,
+                vy: -0.15 + Math.random() * 0.2,
+                life: 1.0, decay: 0.04,
+                size: 2 + Math.random() * 2,
+                color: '#444', isSmoke: true, type: 'smoke', gravity: 0.02
+            });
+        }
+        if (d.life <= 0 || d.y > GAME_HEIGHT + 60 || d.x < -80 || d.x > GAME_WIDTH + 80) {
+            enemyDebris.splice(di, 1);
+        }
+    }
+}
+
+// Renders the small detached mook chunks. Each piece is a stylized slab/triangle
+// that rotates around its center, slightly darker than the live enemy so it reads
+// as "broken off" rather than a duplicate ship. Side=='body' renders a fuselage
+// triangle; left/right render a wing slab that mirrors across x=0.
+function drawEnemyDebris() {
+    for (var di = 0; di < enemyDebris.length; di++) {
+        var d = enemyDebris[di];
+        if (!d) continue;
+        ctx.save();
+        ctx.translate(d.x, d.y);
+        ctx.rotate(d.angle);
+        var sw = d.size;
+        // Thicker slab (was 3) — paired with the boosted debris size so each chunk
+        // actually reads as "a piece of wing" rather than a thin line.
+        var sh = 7;
+        if (d.side === 'body' || d.side === 'nose') {
+            // Fuselage / nose triangle — chunk of body tumbling down
+            ctx.fillStyle = d.colorA;
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, -sh - 2);
+            ctx.lineTo(sw * 0.7, sh + 1);
+            ctx.lineTo(-sw * 0.7, sh + 1);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Cockpit dot for character
+            ctx.fillStyle = d.accent || '#FFCC44';
+            ctx.beginPath();
+            ctx.arc(0, -2, 1.6, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (d.side === 'left') {
+            // Wing slab extending to the LEFT
+            ctx.fillStyle = d.colorA;
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, -3);
+            ctx.lineTo(-sw, -sh);
+            ctx.lineTo(-sw + 2, sh);
+            ctx.lineTo(0, 3);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Engine pod near root (bigger, gold-rimmed to catch the eye)
+            ctx.fillStyle = d.accent || '#FFD700';
+            ctx.beginPath();
+            ctx.ellipse(-sw * 0.35, 0, 2.4, 1.6, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+        } else {
+            // Wing slab extending to the RIGHT
+            ctx.fillStyle = d.colorA;
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, -3);
+            ctx.lineTo(sw, -sh);
+            ctx.lineTo(sw - 2, sh);
+            ctx.lineTo(0, 3);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Engine pod near root
+            ctx.fillStyle = d.accent || '#FFD700';
+            ctx.beginPath();
+            ctx.ellipse(sw * 0.35, 0, 2.4, 1.6, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+}
+
+// === PLAYER DESTRUCTION: detached wing/body debris for the player's plane ===
+// Mirrors the enemyDebris pattern but uses the player's gold/yellow palette so
+// the broken pieces are instantly recognizable as "what was the player's ship".
+// Chunks are ~40% larger than mook debris and live a bit longer (player death is
+// the most cinematic moment, the debris should linger through the slow-mo).
+function createPlayerDebris(px, py) {
+    if (typeof px !== 'number' || typeof py !== 'number') return;
+    // Cap concurrent player debris. Older pieces get culled if a chain reaction
+    // somehow fires multiple times in one frame.
+    var softCap = 28;
+    while (playerDebris.length > softCap) playerDebris.shift();
+
+    // Player palette (matches the gold/yellow player plane accent)
+    var wingFill = '#F0C850';      // gold body
+    var wingStroke = '#2A2410';    // dark outline
+    var wingAccent = '#FFE680';    // bright canopy accent
+    var boomFill = '#D84030';      // red wing accent
+
+    // LEFT WING — large slab kicked out to the left
+    playerDebris.push({
+        x: px - 12, y: py + 2,
+        vx: -5.5 + (Math.random() - 0.5) * 1.8,
+        vy: -2.6 + Math.random() * 1.0,
+        rotSpeed: -0.28 + (Math.random() - 0.5) * 0.12,
+        angle: 0,
+        side: 'left',
+        size: 28,
+        life: 240,  // longer than mook debris so it lingers through slow-mo
+        colorA: wingFill, colorB: wingStroke, accent: wingAccent
+    });
+    // RIGHT WING — mirror
+    playerDebris.push({
+        x: px + 12, y: py + 2,
+        vx: 5.5 + (Math.random() - 0.5) * 1.8,
+        vy: -2.6 + Math.random() * 1.0,
+        rotSpeed: 0.28 + (Math.random() - 0.5) * 0.12,
+        angle: 0,
+        side: 'right',
+        size: 28,
+        life: 240,
+        colorA: wingFill, colorB: wingStroke, accent: wingAccent
+    });
+    // FUSELAGE CENTER — chunk of the body that tumbles end-over-end
+    playerDebris.push({
+        x: px, y: py,
+        vx: (Math.random() - 0.5) * 2.0,
+        vy: -3.0 + Math.random() * 0.8,
+        rotSpeed: 0.40 + (Math.random() - 0.5) * 0.18,
+        angle: 0,
+        side: 'body',
+        size: 22,
+        life: 220,
+        colorA: wingFill, colorB: wingStroke, accent: '#FFCC44'
+    });
+    // TAIL FIN — small wedge that flies off upward-back
+    playerDebris.push({
+        x: px, y: py + 10,
+        vx: (Math.random() - 0.5) * 3.5,
+        vy: -3.4 + Math.random() * 0.6,
+        rotSpeed: (Math.random() - 0.5) * 0.45,
+        angle: 0,
+        side: 'tail',
+        size: 18,
+        life: 200,
+        colorA: boomFill, colorB: '#3A0A0A', accent: '#FFCC44'
+    });
+    // Two small panel shards for extra scatter so the breakup reads as "plane came apart"
+    for (var sh2 = 0; sh2 < 2; sh2++) {
+        var sdir = sh2 === 0 ? -1 : 1;
+        playerDebris.push({
+            x: px + sdir * 6, y: py + 4,
+            vx: sdir * (2.4 + Math.random() * 2.0),
+            vy: -3.4 + Math.random() * 1.0,
+            rotSpeed: sdir * (0.42 + Math.random() * 0.18),
+            angle: 0,
+            side: sdir < 0 ? 'left' : 'right',
+            size: 12,
+            life: 180,
+            colorA: wingFill, colorB: wingStroke, accent: wingAccent
+        });
+    }
+}
+
+function updatePlayerDebris() {
+    for (var di = playerDebris.length - 1; di >= 0; di--) {
+        var d = playerDebris[di];
+        if (!d) continue;
+        d.vy += 0.13;       // gravity — matches enemy debris feel
+        d.vx *= 0.994;      // very mild drag (lighter than mook debris so the chunk flies a bit further)
+        d.x += d.vx;
+        d.y += d.vy;
+        d.angle += d.rotSpeed;
+        d.life--;
+        // Small smoke wisp so the chunk visibly smolders
+        if (d.life % 6 === 0 && typeof explosions !== 'undefined' &&
+            explosions.length < (typeof MAX_PARTICLES !== 'undefined' ? MAX_PARTICLES - 4 : 100)) {
+            explosions.push({
+                x: d.x + (Math.random() - 0.5) * 4,
+                y: d.y + (Math.random() - 0.5) * 4,
+                vx: (Math.random() - 0.5) * 0.25,
+                vy: -0.15 + Math.random() * 0.2,
+                life: 1.0, decay: 0.04,
+                size: 2 + Math.random() * 2,
+                color: '#666', isSmoke: true, type: 'smoke', gravity: 0.02
+            });
+        }
+        if (d.life <= 0 || d.y > GAME_HEIGHT + 60 || d.x < -80 || d.x > GAME_WIDTH + 80) {
+            playerDebris.splice(di, 1);
+        }
+    }
+}
+
+function drawPlayerDebris() {
+    for (var di = 0; di < playerDebris.length; di++) {
+        var d = playerDebris[di];
+        if (!d) continue;
+        ctx.save();
+        ctx.translate(d.x, d.y);
+        ctx.rotate(d.angle);
+        var sw = d.size;
+        var sh = 9;
+        // Fade out in the last 40% of life so chunks dissolve cleanly
+        var lifeRatio = Math.max(0, d.life / 240);
+        if (lifeRatio < 0.6) {
+            ctx.globalAlpha = Math.max(0, (lifeRatio - 0.1) / 0.5);
+        }
+        if (d.side === 'body') {
+            // Fuselage triangle — wider base than mook debris
+            ctx.fillStyle = d.colorA;
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(0, -sh - 4);
+            ctx.lineTo(sw * 0.75, sh + 2);
+            ctx.lineTo(-sw * 0.75, sh + 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Canopy highlight
+            ctx.fillStyle = d.accent || '#FFCC44';
+            ctx.beginPath();
+            ctx.ellipse(0, -2, 3, 2.2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 0.6;
+            ctx.stroke();
+        } else if (d.side === 'tail') {
+            // Vertical stabilizer / tail fin
+            ctx.fillStyle = d.colorA;
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-sw * 0.5, -sh);
+            ctx.lineTo(sw * 0.5, -sh);
+            ctx.lineTo(sw * 0.7, sh);
+            ctx.lineTo(-sw * 0.7, sh);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        } else if (d.side === 'left') {
+            // Wing slab extending to the LEFT, with engine pod near root
+            ctx.fillStyle = d.colorA;
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(0, -4);
+            ctx.lineTo(-sw, -sh);
+            ctx.lineTo(-sw + 3, sh);
+            ctx.lineTo(0, 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Engine pod near root (red, matches player wing accent)
+            ctx.fillStyle = '#D84030';
+            ctx.beginPath();
+            ctx.ellipse(-sw * 0.35, 0, 4, 2.8, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 0.6;
+            ctx.stroke();
+            // Exhaust glow
+            ctx.fillStyle = '#FFAA22';
+            ctx.beginPath();
+            ctx.ellipse(-sw * 0.35, sh * 0.6, 2.2, 1.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            // Wing slab extending to the RIGHT (mirror)
+            ctx.fillStyle = d.colorA;
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(0, -4);
+            ctx.lineTo(sw, -sh);
+            ctx.lineTo(sw - 3, sh);
+            ctx.lineTo(0, 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = '#D84030';
+            ctx.beginPath();
+            ctx.ellipse(sw * 0.35, 0, 4, 2.8, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = d.colorB;
+            ctx.lineWidth = 0.6;
+            ctx.stroke();
+            ctx.fillStyle = '#FFAA22';
+            ctx.beginPath();
+            ctx.ellipse(sw * 0.35, sh * 0.6, 2.2, 1.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+}
+
 function createExplosion(x, y, scale) {
     scale = scale || 1.0;
     // === PERF: Adaptive particle budget for screen density ===
-    var overloaded = explosions.length > 120;
+    // (2026-09) Threshold lowered from 120 → 60 to match drawExplosion's lowered
+    // overloaded threshold. Both spawn and render now agree on when to switch to
+    // the lightweight particle stream — prevents the mid-boss death cascade from
+    // spawning 100+ shadow-blur particles in a single frame.
+    var overloaded = explosions.length > 60;
     var mult = overloaded ? 0.35 : 0.5;
     var sc = scale * mult;
     // === IMPACT: Core flash — always reserved (squeeze room by retiring oldest non-core particle) ===
@@ -2040,6 +2669,9 @@ function playerHit() {
     // === PERF: Ultra-minimal explosion for playable framerate ===
     var px = player.x, py = player.y;
     createExplosion(px, py, 1.2);
+    // (2026-09) Detach wing/body chunks from the player plane so the death
+    // visibly reads as "plane broke apart", not just a smoke puff.
+    createPlayerDebris(px, py);
     // Ultra-minimal extra particles: 2 smoke, 2 fire, 1 spark, 1 shockwave
     for (var i = 0; i < 2; i++) {
         var angle = Math.random() * Math.PI * 2;
@@ -2068,6 +2700,9 @@ function playerHit() {
         var dpx = player.x, dpy = player.y;
         createMassiveExplosion(dpx, dpy, 1.5);
         createExplosion(dpx, dpy, 3.0);
+        // (2026-09) Detach wing/body chunks for the final-death cascade so even
+        // the ultimate game-over explosion leaves a trail of tumbling plane parts.
+        createPlayerDebris(dpx, dpy);
         // Large fireball burst
         for (var fi = 0; fi < 30; fi++) {
             var fAng = Math.random() * Math.PI * 2;
@@ -2449,6 +3084,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     const dy = player.y - e.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     if (dist < 75) {
+                        // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
+                        if (e.entryInvuln && e.entryInvuln > 0) continue;
                         e.hp -= 3;
                         if (e.hp <= 0) {
                             score += e.score;
@@ -2678,9 +3315,13 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     beam.targetEnemy = target;
                 } else {
                     beam.targetEnemy = null;
+                    beam.targetX = player.x;
+                    beam.targetY = 0;
                 }
             } else {
                 beam.targetEnemy = null;
+                beam.targetX = player.x;
+                beam.targetY = 0;
             }
 
             // Damage tick
@@ -2690,6 +3331,10 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 
                 if (beam.targetEnemy && enemies.includes(beam.targetEnemy) && !beam.targetEnemy.dying) {
                     const enemy = beam.targetEnemy;
+                    // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
+                    if (enemy.entryInvuln && enemy.entryInvuln > 0) {
+                        continue;
+                    }
                     // === B-52 STAGE BOSS: wings invulnerable. Skip damage if beam strikes only wings. ===
                     if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
                         const hb = enemy.hitboxBody;
@@ -2886,17 +3531,118 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             continue;
         }
 
+        // === SWEEP + ORBIT MOVEMENT (2026-09) ===
+        // Stage 1 (sweep): plane enters from the side and dives toward the player.
+        // Stage 2 (orbit): once inside the playfield, the plane locks onto a circular
+        //   strafing path around the player for a per-type lifetime (scout 2.5s,
+        //   fighter 4s, bomber 5.5s). Each plane picks a unique orbital radius and
+        //   direction so multiple mooks spread around the player instead of stacking.
+        // Stage 3 (exit): when the orbit timer expires, the plane peels off toward
+        //   the top OR bottom edge (random per plane) and flies straight out.
+        if (enemy._sweep && enemy._spawnSide) {
+            enemy._sweepPhase += 0.06;
+
+            // ===== STAGE 2: ORBIT (active when inside playfield & entry has decayed) =====
+            if (enemy._orbitActive) {
+                enemy._orbitAngle += enemy._orbitAngularSpeed * enemy._orbitDir;
+                // Lock the plane's position onto the orbital circle each frame
+                enemy.x = player.x + Math.cos(enemy._orbitAngle) * enemy._orbitRadius;
+                enemy.y = player.y + Math.sin(enemy._orbitAngle) * enemy._orbitRadius;
+                // Tilt: face along the tangent direction so it visually "circles"
+                const tangentVx = -Math.sin(enemy._orbitAngle) * enemy._orbitDir;
+                enemy.angle = Math.max(-0.7, Math.min(0.7, tangentVx * 1.2));
+                enemy._orbitLifetime--;
+                if (enemy._orbitLifetime <= 0) {
+                    // Exit stage — break orbit and pick an exit direction
+                    enemy._orbitActive = false;
+                    enemy._sweep = false;
+                    enemy.angle = 0;
+                    // Decide whether to peel UP (-1) or DOWN (+1) — random per plane
+                    enemy._orbitExitDir = (Math.random() < 0.5) ? -1 : 1;
+                    // Give the plane a steady drift vector toward its exit edge.
+                    // Use its current orbital tangent as the horizontal direction
+                    // so the exit doesn't pop sideways.
+                    const tx = -Math.sin(enemy._orbitAngle) * enemy._orbitDir;
+                    enemy._exitVx = tx * enemy.speed * 0.6;
+                    enemy._exitVy = enemy._orbitExitDir * (enemy.speed * 0.5 + 0.4);
+                }
+                // FALL THROUGH — bomber still wants to fire below
+            } else {
+                // ===== STAGE 1: SWEEP ENTRY =====
+                const vx = enemy._sweepDir * (enemy.speed * 0.95) + Math.sin(enemy._sweepPhase) * 0.6;
+                enemy.x += vx;
+                enemy.y += enemy.speed * 0.85;
+
+                // Once inside the playfield, dampen the inward velocity
+                if (enemy.x > 12 && enemy.x < GAME_WIDTH - 12) {
+                    enemy._sweepDir *= 0.96;
+                    if (Math.abs(enemy._sweepDir) < 0.08) {
+                        // ===== Transition into orbit =====
+                        // Pick a stable radius based on plane size + a randomized
+                        // offset so multiple orbiters don't collide at one radius.
+                        const baseRadius = 130 + (enemy.width * 0.6);
+                        enemy._orbitRadius = baseRadius + Math.random() * 60;
+                        // Initial angle = current bearing from player
+                        const dx = enemy.x - player.x;
+                        const dy = enemy.y - player.y;
+                        enemy._orbitAngle = Math.atan2(dy, dx);
+                        // Random direction + small speed jitter so the swarm looks
+                        // organic instead of perfectly synchronized
+                        enemy._orbitDir = (Math.random() < 0.5) ? 1 : -1;
+                        enemy._orbitAngularSpeed = enemy._orbitAngularSpeed || 0.04;
+                        enemy._orbitAngularSpeed *= (0.85 + Math.random() * 0.3);
+                        enemy._orbitLifetime = enemy._orbitMaxLifetime || 240;
+                        enemy._orbitActive = true;
+                        enemy.angle = 0;
+                    } else {
+                        // Mid-decay: keep banking for visual feedback
+                        enemy.angle = vx * 0.05;
+                    }
+                } else {
+                    // Still in transit from the spawn edge — bank in entry direction
+                    enemy.angle = vx * 0.05;
+                }
+            }
+        }
+
+        // ===== STAGE 3: EXIT DRIFT (after orbit ends, before reaching the edge) =====
+        // If the plane has finished orbiting, just keep applying the exit vector
+        // until it leaves the screen. The cleanup at the bottom of the loop will
+        // splice it off once it crosses an edge.
+        if (!enemy._sweep && enemy._exitVx !== undefined && enemy._exitVy !== undefined) {
+            enemy.x += enemy._exitVx;
+            enemy.y += enemy._exitVy;
+            enemy.angle = Math.max(-0.5, Math.min(0.5, enemy._exitVx * 0.08));
+        }
+
         switch (enemy.type) {
             case 'scout':
-                enemy.y += enemy.speed;
+                // Orbit + sweep movement lives in the SWEEP/ORBIT block above.
+                // Freefall only when no sweep / orbit / exit is active.
+                if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx === undefined) {
+                    enemy.y += enemy.speed;
+                }
                 break;
             case 'fighter':
-                enemy.y += enemy.speed;
-                enemy.x += Math.sin(enemy.phase) * 2;
+                // Orbit + sweep entries are driven by the SWEEP/ORBIT block above.
+                // Only apply freefall + sine wiggle when the plane is in plain
+                // top-down mode (no sweep / no orbit).
+                if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx === undefined) {
+                    enemy.y += enemy.speed;
+                    enemy.x += Math.sin(enemy.phase) * 2;
+                } else if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx !== undefined) {
+                    // Post-orbit exit drift is handled by the exit block above
+                }
                 break;
             case 'bomber':
-                enemy.y += enemy.speed;
-                if (enemy.y > 100 && enemy.y < GAME_HEIGHT - 100) {
+                // Orbit + sweep movement lives in the SWEEP/ORBIT block above.
+                // Freefall only when no sweep / orbit / exit is active.
+                if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx === undefined) {
+                    enemy.y += enemy.speed;
+                }
+                // Bomber shoots while actively in combat (top-down, orbiting, or sweeping).
+                // Distance from player is the trigger so it still fires during orbit.
+                if (enemy.y > 50 && enemy.y < GAME_HEIGHT - 50) {
                     enemy.shootCooldown--;
                     if (enemy.shootCooldown <= 0) {
                         enemyBullets.push({
@@ -2904,7 +3650,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                             y: enemy.y + enemy.height / 2,
                             width: 28,
                             height: 28,
-                            speed: 1.28 // +60% from 0.8 (was 0.5)
+                            speed: 1.28
                         });
                         enemy.shootCooldown = 160;
                     }
@@ -3065,10 +3811,19 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         const targetTilt = driftLeft ? -1.3 : 1.3;  // ~75° toward corner
                         enemy.angle += (targetTilt - enemy.angle) * 0.08;
 
-                        // End condition: off-screen either side OR y past bottom
+                        // End condition: off-screen either side OR y past bottom.
+                        // (2026-09 bugfix) Require a MINIMUM cascade time so that the
+                        // wing-separation + drift + giant explosion sequence is always
+                        // visible regardless of where on screen the boss was destroyed.
+                        // Previously, if the boss died near the bottom of the screen,
+                        // offBottom was satisfied within a couple of frames and the
+                        // player saw nothing but the boss vanishing.
+                        const minCascadeFrames = 90;  // ~1.5s guaranteed cascade
                         const offLeft = enemy.x < -120;
                         const offRight = enemy.x > GAME_WIDTH + 120;
-                        const offBottom = enemy.y > GAME_HEIGHT + 80;
+                        const offBottom =
+                            enemy.dyingTimer > minCascadeFrames &&
+                            enemy.y > GAME_HEIGHT + 80;
                         enemy._dyingOffScreen = offLeft || offRight || offBottom;
                         // Hard cap so it doesn't loop forever
                         if (enemy.dyingTimer > 360) enemy._dyingOffScreen = true;
@@ -3368,12 +4123,14 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                                 type: 'fire', gravity: 0
                             });
                         }
-                        // Screen shake + sound + slow-mo (frame 1 only)
+                        // Screen shake + sound (frame 1 only)
+                        // NOTE: no slow-mo here — slow-motion is reserved for the final boss
+                        // death and player death. Triggering it on the mid-boss made the screen
+                        // stutter at the moment of the explosion.
                         deathFlashAlpha = Math.max(deathFlashAlpha, 0.85);
                         screenShake = Math.max(screenShake, 22);
                         screenShakeIntensity = Math.max(screenShakeIntensity, 8);
                         if (typeof playExplosionSound === 'function') playExplosionSound();
-                        if (typeof startSlowMo === 'function') startSlowMo(140, 0.35);
                     }
                 }
 
@@ -3516,8 +4273,13 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             }
         }
         
-        // Remove off-screen enemies
-        if (enemy.y > GAME_HEIGHT + 50) {
+        // Remove off-screen enemies. (2026-09) Now also culls sweep-entry enemies
+        // that fly out the left/right edges — previously the bottom check missed
+        // them, so sweep bombers could leak off the side and keep rendering.
+        const offBottom = enemy.y > GAME_HEIGHT + 50;
+        const offLeft = enemy.x < -80;
+        const offRight = enemy.x > GAME_WIDTH + 80;
+        if (offBottom || offLeft || offRight) {
             if (enemy.isWaveBoss) {
                 bossActive = false;
                 if (bossIsFinalBoss) {
@@ -3573,6 +4335,11 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             bossWingDebris.splice(wi, 1);
         }
     }
+
+    // === MOOK DESTRUCTION: advance small detached wing/body chunks from regular enemy kills ===
+    updateEnemyDebris();
+    // === PLAYER DESTRUCTION: advance the player's detached wing/body chunks ===
+    updatePlayerDebris();
 
     // Update powerups
     // Converted from forEach to for (reverse for safe splice)
@@ -3731,6 +4498,12 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             if (bullet._hit) break;
             // === DYING GUARD: skip enemies already in dying-fall / death-cascade ===
             if (enemy.dying) continue;
+            // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
+            if (enemy.entryInvuln && enemy.entryInvuln > 0) {
+                createHitSpark(bullet.x, bullet.y, 0.1);
+                bullet._hit = true;
+                break;
+            }
             if (checkCollision(bullet, enemy)) {
                 // === B-52 STAGE BOSS: wings invulnerable. ===
                 if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
@@ -3791,6 +4564,11 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     } else if (!enemy.isWaveBoss && !enemy.isMidBoss) {
                         // Mook (regular enemy) drops powerup immediately
                         spawnPowerup(enemy.x, enemy.y);
+                        // === IMPACT (2026-09): bigger boom + small detached wing/body chunks
+                        // so regular kills don't disappear into a single tiny puff like before.
+                        // Boom bump: prev scale was 0.7 (player bullets) — now 1.0 main flash.
+                        createExplosion(enemy.x, enemy.y, 1.0);
+                        createEnemyDebris(enemy);
                     }
                     // Dying enemies stay in the array — their dying block removes them later
                     if (!enemy.dying) {
@@ -4052,6 +4830,10 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                             player.lives = Math.min(5, player.lives + 1);
                         } else {
                             spawnPowerup(enemy.x, enemy.y);
+                            // Mook cleanup — add small wing/body debris so M-missile
+                            // kills also produce the impact effect (matches the
+                            // player-bullet and standard-missile branches).
+                            createEnemyDebris(enemy);
                         }
                         enemies.splice(ei, 1);
                     }
@@ -4168,6 +4950,12 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             const enemy = enemies[ei];
             // === DYING GUARD: skip enemies in dying-fall / death-cascade ===
             if (enemy.dying) continue;
+            // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
+            if (enemy.entryInvuln && enemy.entryInvuln > 0) {
+                createHitSpark(m.x, m.y, 0.1);
+                hitEnemy = true;
+                break;
+            }
             if (checkCollision(missileHitbox, enemy)) {
                 // === B-52 STAGE BOSS: wings are invulnerable. Only body/tail take damage. ===
                 if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
@@ -4208,7 +4996,9 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     comboCount++;
                     comboTimer = 90;
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
-                    createExplosion(enemy.x, enemy.y, 0.7);
+                    // === IMPACT (2026-09): bumped 0.7 → 1.0 so a missile kill visually
+                    // matches the player-bullet branch (both now feed createEnemyDebris).
+                    createExplosion(enemy.x, enemy.y, 1.0);
                     if (enemy.isWaveBoss) {
                         // One-shot reward for boss kill
                         spawnPowerup(enemy.x, enemy.y, true);
@@ -4245,6 +5035,9 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         break;
                     } else {
                         spawnPowerup(enemy.x, enemy.y);
+                        // Match the player-bullet branch so missile kills also get
+                        // the small detached-chunk destruction effect.
+                        createEnemyDebris(enemy);
                     }
                     if (!enemy.dying) {
                         enemies.splice(ei, 1);
@@ -4269,11 +5062,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             const enemy = enemies[ei];
             // === DYING GUARD: enemies already in dying-fall / death-cascade are ignored entirely ===
             if (enemy.dying) continue;
+            // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
+            if (enemy.entryInvuln && enemy.entryInvuln > 0) {
+                createHitSpark(bullet.x, bullet.y, 0.1);
+                continue;
+            }
             if (checkCollision(bullet, enemy)) {
                 // === B-52 STAGE BOSS: wings are invulnerable. Only body/tail take damage. ===
                 if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
-                    const hb = bullet.hitboxBody || { xOff: 0, yOff: 2, halfW: 55, halfH: 28 };
-                    const ht = bullet.hitboxTail || { xOff: 0, yOff: 45, halfW: 25, halfH: 15 };
+                    const hb = enemy.hitboxBody;
+                    const ht = enemy.hitboxTail;
                     // Bullet position relative to boss center
                     const bRelX = bullet.x - enemy.x;
                     const bRelY = bullet.y - enemy.y;
@@ -4416,6 +5214,10 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     } else {
                         createExplosion(enemy.x, enemy.y, 0.7);
                         spawnPowerup(enemy.x, enemy.y);
+                        // Ram-killed mook also detaches a couple of wing chunks —
+                        // matches the bullet/missile branches so every mook death
+                        // path produces the same satisfying chunky debris.
+                        createEnemyDebris(enemy);
                         ramKilled = true;
                     }
                 }
@@ -4933,8 +5735,12 @@ function updateHyperspace() {
         bossDefeated = false;
         bossSpawned = false;  // Reset for next stage
         bossActive = false;
+        // (2026-09 bugfix) Reset bossIsFinalBoss on stage transition so the next stage's
+        // final-boss flag is set fresh when its boss spawns, and mid-bosses in this stage
+        // are not mis-identified as final bosses.
+        bossIsFinalBoss = false;
         bossClawCount = currentStage + 1;
-        
+
         // Next planet theme
         currentPlanetIndex = (currentPlanetIndex + 1) % PLANET_THEMES.length;
         generatePlanetSet(currentPlanetIndex);
@@ -5854,14 +6660,34 @@ function drawPlayer() {
                 }
             }
 
+            // === SWEEP BANKING (2026-09) ===
+            // Live mooks with a sweep entry tilt their silhouette slightly in the
+            // direction of their horizontal velocity, so the player can read the
+            // sweep-attack angle at a glance.
+            if (!e.dying && e._sweep && e.angle && Math.abs(e.angle) > 0.01 &&
+                (e.type === 'scout' || e.type === 'fighter' || e.type === 'bomber')) {
+                ctx.translate(e.x, e.y);
+                ctx.rotate(Math.max(-0.5, Math.min(0.5, e.angle)));
+                ctx.translate(-e.x, -e.y);
+            }
+
+            // === MOOK DRAW SCALE (2026-09) ===
+            // Mooks were drawn at their original small size; bump them up so they
+            // read as WWII fighters against the sky. drawScale is set in spawnEnemy
+            // per type. Applied as a uniform ctx.scale around (e.x, e.y) so all
+            // coordinates inside the draw function multiply identically.
+            if (!e.dying && e.drawScale && e.drawScale !== 1 &&
+                (e.type === 'scout' || e.type === 'fighter' || e.type === 'bomber')) {
+                ctx.translate(e.x, e.y);
+                ctx.scale(e.drawScale, e.drawScale);
+                ctx.translate(-e.x, -e.y);
+            }
+
             if (e.type === 'scout') {
-                // Small agile scout (red/green)
                 drawScoutEnemy(e);
             } else if (e.type === 'fighter') {
-                // Heavier fighter (red body, dark wings)
                 drawFighterEnemy(e);
             } else if (e.type === 'bomber') {
-                // Large slow bomber (gray, wide wings)
                 drawBomberEnemy(e);
             } else if (e.type === 'heavyBomber') {
                 // Heavy bomber mid-boss (unified for all stages - long bomber silhouette)
@@ -5980,52 +6806,108 @@ function drawPlayer() {
         }
     }
 
-    // ===== SCOUT: small red plane =====
+    // ===== SCOUT: A6M Zero inspired — slim elliptical wings, long pointed nose =====
+    // Key visual cues borrowed from the Zero: round-tipped wings, narrow fuselage,
+    // long nose ahead of the cockpit, light grey-green camo top, blue canopy.
     function drawScoutEnemy(e) {
         const ex = e.x, ey = e.y;
-        // Wing wobble animation
-        const wobble = Math.sin(frameCount * 0.15 + e.x) * 1.5;
-        // Shadow
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        // Subtle wing wobble so the silhouette feels alive
+        const wobble = Math.sin(frameCount * 0.15 + e.x) * 1.0;
+        // NOTE (2026-09): drop shadow removed. The soft dark ellipse under the
+        // fuselage bled past the wing outline and made every mook read as a
+        // generic round blob, hiding the WWII silhouettes.
+        // Wings — elliptical (rounded tips) using quadraticCurveTo for the soft
+        // Zero-style outline. Spans ±17 wide and ~10 deep.
+        ctx.fillStyle = GRAD_CACHE.scoutWing;
         ctx.beginPath();
-        ctx.ellipse(ex + 1, ey + 2, 8, 10, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // Wings (dark red)
-        ctx.fillStyle = '#882222';
-        ctx.beginPath();
-        ctx.moveTo(ex - 4, ey - 4 + wobble);
-        ctx.lineTo(ex - 16, ey - 1);
-        ctx.lineTo(ex - 18, ey + 2);
-        ctx.lineTo(ex - 4, ey + 3);
+        ctx.moveTo(ex - 3, ey - 3 + wobble);
+        ctx.quadraticCurveTo(ex - 12, ey - 5 + wobble, ex - 17, ey - 1);
+        ctx.quadraticCurveTo(ex - 18, ey + 2, ex - 10, ey + 3);
+        ctx.lineTo(ex - 3, ey + 3);
         ctx.closePath();
         ctx.fill();
         ctx.beginPath();
-        ctx.moveTo(ex + 4, ey - 4 + wobble);
-        ctx.lineTo(ex + 16, ey - 1);
-        ctx.lineTo(ex + 18, ey + 2);
-        ctx.lineTo(ex + 4, ey + 3);
+        ctx.moveTo(ex + 3, ey - 3 + wobble);
+        ctx.quadraticCurveTo(ex + 12, ey - 5 + wobble, ex + 17, ey - 1);
+        ctx.quadraticCurveTo(ex + 18, ey + 2, ex + 10, ey + 3);
+        ctx.lineTo(ex + 3, ey + 3);
         ctx.closePath();
         ctx.fill();
-        // Body (red) — PERF: cached gradient (same color stops regardless of position)
+        // Fuselage — long pointed nose (characteristic Zero profile)
         ctx.fillStyle = GRAD_CACHE.scoutBody;
         ctx.beginPath();
-        ctx.moveTo(ex, ey - 12);
-        ctx.lineTo(ex + 4, ey - 4 + wobble);
-        ctx.lineTo(ex + 4, ey + 6);
-        ctx.lineTo(ex - 4, ey + 6);
-        ctx.lineTo(ex - 4, ey - 4 + wobble);
+        ctx.moveTo(ex, ey - 14);
+        ctx.quadraticCurveTo(ex + 3.5, ey - 8, ex + 3.5, ey - 3);
+        ctx.lineTo(ex + 3.5, ey + 6);
+        ctx.quadraticCurveTo(ex + 2, ey + 8, ex, ey + 8);
+        ctx.quadraticCurveTo(ex - 2, ey + 8, ex - 3.5, ey + 6);
+        ctx.lineTo(ex - 3.5, ey - 3);
+        ctx.quadraticCurveTo(ex - 3.5, ey - 8, ex, ey - 14);
         ctx.closePath();
         ctx.fill();
-        // Cockpit
-        ctx.fillStyle = '#FFCC44';
+        // Tail planes (small, behind the wing root)
+        ctx.fillStyle = '#6E8068';
         ctx.beginPath();
-        ctx.ellipse(ex, ey - 4 + wobble, 1.5, 3, 0, 0, Math.PI * 2);
+        ctx.moveTo(ex - 3, ey + 5);
+        ctx.lineTo(ex - 7, ey + 9);
+        ctx.lineTo(ex - 2, ey + 9);
+        ctx.lineTo(ex, ey + 7);
+        ctx.closePath();
         ctx.fill();
-        // Outline
-        ctx.strokeStyle = '#330000';
-        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(ex + 3, ey + 5);
+        ctx.lineTo(ex + 7, ey + 9);
+        ctx.lineTo(ex + 2, ey + 9);
+        ctx.lineTo(ex, ey + 7);
+        ctx.closePath();
+        ctx.fill();
+        // Canopy — bright bubble canopy (zero had a distinctive rounded greenhouse)
+        ctx.fillStyle = GRAD_CACHE.scoutCanopy;
+        ctx.beginPath();
+        ctx.ellipse(ex, ey - 6, 2.2, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#2A3A28';
+        ctx.lineWidth = 0.4;
         ctx.stroke();
-        // Hit flash
+        // Hinomaru (red rising-sun disc) on each wing top — instantly reads as IJN
+        ctx.fillStyle = '#C8302A';
+        ctx.beginPath();
+        ctx.arc(ex - 11, ey + 1, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(ex + 11, ey + 1, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        // Wing outline — thickened (2026-09) from 0.4 hairline to 1.3 so the
+        // silhouette edges stay crisp now that the drop shadow is gone.
+        ctx.strokeStyle = '#1B2619';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(ex - 3, ey - 3 + wobble);
+        ctx.quadraticCurveTo(ex - 12, ey - 5 + wobble, ex - 17, ey - 1);
+        ctx.quadraticCurveTo(ex - 18, ey + 2, ex - 10, ey + 3);
+        ctx.lineTo(ex - 3, ey + 3);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ex + 3, ey - 3 + wobble);
+        ctx.quadraticCurveTo(ex + 12, ey - 5 + wobble, ex + 17, ey - 1);
+        ctx.quadraticCurveTo(ex + 18, ey + 2, ex + 10, ey + 3);
+        ctx.lineTo(ex + 3, ey + 3);
+        ctx.closePath();
+        ctx.stroke();
+        // Fuselage outline (inherits the 1.3 lineWidth set for the wings)
+        ctx.strokeStyle = '#1B2619';
+        ctx.beginPath();
+        ctx.moveTo(ex, ey - 14);
+        ctx.quadraticCurveTo(ex + 3.5, ey - 8, ex + 3.5, ey - 3);
+        ctx.lineTo(ex + 3.5, ey + 6);
+        ctx.quadraticCurveTo(ex + 2, ey + 8, ex, ey + 8);
+        ctx.quadraticCurveTo(ex - 2, ey + 8, ex - 3.5, ey + 6);
+        ctx.lineTo(ex - 3.5, ey - 3);
+        ctx.quadraticCurveTo(ex - 3.5, ey - 8, ex, ey - 14);
+        ctx.closePath();
+        ctx.stroke();
+        // Hit flash overlay
         if (e.hitFlash && e.hitFlash > 0) {
             ctx.fillStyle = 'rgba(255, 255, 255, ' + (e.hitFlash * 0.5) + ')';
             ctx.beginPath();
@@ -6034,82 +6916,131 @@ function drawPlayer() {
         }
     }
 
-    // ===== FIGHTER: heavier combat plane =====
+    // ===== FIGHTER: P-40 Warhawk inspired — blocky straight leading edge, distinct
+    // mid-fuselage radiator scoop, olive drab USAAC camo, white star roundel =====
     function drawFighterEnemy(e) {
         const ex = e.x, ey = e.y;
-        // Shadow
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        // NOTE (2026-09): drop shadow removed — see drawScoutEnemy.
+        // Wings — straighter leading edge (P-40 wasn't elliptical) with slightly
+        // rounded tips. Spans ±22 wide.
+        ctx.fillStyle = GRAD_CACHE.fighterWing;
         ctx.beginPath();
-        ctx.ellipse(ex + 1, ey + 2, 12, 14, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // Main wings — PERF: cached gradient
-        ctx.fillStyle = GRAD_CACHE.scoutWing;
-        ctx.beginPath();
-        ctx.moveTo(ex - 6, ey - 2);
-        ctx.lineTo(ex - 20, ey);
-        ctx.lineTo(ex - 22, ey + 6);
-        ctx.lineTo(ex - 6, ey + 8);
+        ctx.moveTo(ex - 5, ey - 1);
+        ctx.lineTo(ex - 19, ey);
+        ctx.quadraticCurveTo(ex - 22, ey + 2, ex - 19, ey + 5);
+        ctx.lineTo(ex - 5, ey + 7);
         ctx.closePath();
         ctx.fill();
         ctx.beginPath();
-        ctx.moveTo(ex + 6, ey - 2);
-        ctx.lineTo(ex + 20, ey);
-        ctx.lineTo(ex + 22, ey + 6);
-        ctx.lineTo(ex + 6, ey + 8);
+        ctx.moveTo(ex + 5, ey - 1);
+        ctx.lineTo(ex + 19, ey);
+        ctx.quadraticCurveTo(ex + 22, ey + 2, ex + 19, ey + 5);
+        ctx.lineTo(ex + 5, ey + 7);
         ctx.closePath();
         ctx.fill();
-        // Body (red) — PERF: cached gradient
-        ctx.fillStyle = GRAD_CACHE.scoutBody;
+        // Fuselage — long pointed nose (P-40 had a long nose for the Allison V-1710)
+        ctx.fillStyle = GRAD_CACHE.fighterBody;
         ctx.beginPath();
-        ctx.moveTo(ex, ey - 16);
-        ctx.lineTo(ex + 5, ey - 6);
-        ctx.lineTo(ex + 6, ey + 10);
+        ctx.moveTo(ex, ey - 18);
+        ctx.quadraticCurveTo(ex + 5, ey - 12, ex + 5, ey - 4);
+        ctx.lineTo(ex + 5.5, ey + 9);
+        ctx.quadraticCurveTo(ex + 3, ey + 11, ex, ey + 11);
+        ctx.quadraticCurveTo(ex - 3, ey + 11, ex - 5.5, ey + 9);
+        ctx.lineTo(ex - 5, ey - 4);
+        ctx.quadraticCurveTo(ex - 5, ey - 12, ex, ey - 18);
+        ctx.closePath();
+        ctx.fill();
+        // Radiator scoop under the fuselage (P-40 signature feature)
+        ctx.fillStyle = '#5A4E1E';
+        ctx.beginPath();
+        ctx.moveTo(ex - 4, ey + 4);
         ctx.lineTo(ex - 6, ey + 10);
-        ctx.lineTo(ex - 5, ey - 6);
-        ctx.closePath();
-        ctx.fill();
-        // Tail
-        ctx.fillStyle = '#882222';
-        ctx.beginPath();
-        ctx.moveTo(ex - 5, ey + 6);
-        ctx.lineTo(ex - 8, ey + 14);
-        ctx.lineTo(ex - 3, ey + 14);
-        ctx.lineTo(ex, ey + 8);
-        ctx.closePath();
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(ex + 5, ey + 6);
-        ctx.lineTo(ex + 8, ey + 14);
-        ctx.lineTo(ex + 3, ey + 14);
-        ctx.lineTo(ex, ey + 8);
-        ctx.closePath();
-        ctx.fill();
-        // Cockpit
-        ctx.fillStyle = '#FFFF99';
-        ctx.beginPath();
-        ctx.ellipse(ex, ey - 4, 2, 4, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // Wing tip lights
-        ctx.fillStyle = '#FF0000';
-        ctx.beginPath();
-        ctx.arc(ex - 18, ey + 3, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#00FF00';
-        ctx.beginPath();
-        ctx.arc(ex + 18, ey + 3, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-        // Outline
-        ctx.strokeStyle = '#220000';
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        ctx.moveTo(ex, ey - 16);
-        ctx.lineTo(ex + 5, ey - 6);
         ctx.lineTo(ex + 6, ey + 10);
-        ctx.lineTo(ex - 6, ey + 10);
-        ctx.lineTo(ex - 5, ey - 6);
+        ctx.lineTo(ex + 4, ey + 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#2A2410';
+        ctx.lineWidth = 0.4;
+        ctx.stroke();
+        // Tail planes
+        ctx.fillStyle = '#3F4720';
+        ctx.beginPath();
+        ctx.moveTo(ex - 4, ey + 8);
+        ctx.lineTo(ex - 9, ey + 15);
+        ctx.lineTo(ex - 3, ey + 15);
+        ctx.lineTo(ex, ey + 10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(ex + 4, ey + 8);
+        ctx.lineTo(ex + 9, ey + 15);
+        ctx.lineTo(ex + 3, ey + 15);
+        ctx.lineTo(ex, ey + 10);
+        ctx.closePath();
+        ctx.fill();
+        // Vertical stabilizer / tail fin
+        ctx.fillStyle = '#5A6028';
+        ctx.beginPath();
+        ctx.moveTo(ex - 1.5, ey + 9);
+        ctx.lineTo(ex - 1.5, ey + 14);
+        ctx.lineTo(ex + 1.5, ey + 14);
+        ctx.lineTo(ex + 1.5, ey + 9);
+        ctx.closePath();
+        ctx.fill();
+        // Canopy — raised teardrop greenhouse (P-40 style)
+        ctx.fillStyle = GRAD_CACHE.fighterCanopy;
+        ctx.beginPath();
+        ctx.ellipse(ex, ey - 7, 2.4, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#2A3A48';
+        ctx.lineWidth = 0.4;
+        ctx.stroke();
+        // USAAC white star roundel on each wing top — instantly reads as Allied
+        ctx.fillStyle = '#F0F0E8';
+        ctx.beginPath();
+        ctx.arc(ex - 13, ey + 1.5, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#C8302A';
+        ctx.beginPath();
+        ctx.arc(ex - 13, ey + 1.5, 1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#F0F0E8';
+        ctx.beginPath();
+        ctx.arc(ex + 13, ey + 1.5, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#C8302A';
+        ctx.beginPath();
+        ctx.arc(ex + 13, ey + 1.5, 1, 0, Math.PI * 2);
+        ctx.fill();
+        // Wing + fuselage outline — thickened (2026-09) from 0.5 to 1.4 for a
+        // crisp silhouette now that the drop shadow is gone.
+        ctx.strokeStyle = '#141808';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(ex - 5, ey - 1);
+        ctx.lineTo(ex - 19, ey);
+        ctx.quadraticCurveTo(ex - 22, ey + 2, ex - 19, ey + 5);
+        ctx.lineTo(ex - 5, ey + 7);
         ctx.closePath();
         ctx.stroke();
-        // Hit flash
+        ctx.beginPath();
+        ctx.moveTo(ex + 5, ey - 1);
+        ctx.lineTo(ex + 19, ey);
+        ctx.quadraticCurveTo(ex + 22, ey + 2, ex + 19, ey + 5);
+        ctx.lineTo(ex + 5, ey + 7);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ex, ey - 18);
+        ctx.quadraticCurveTo(ex + 5, ey - 12, ex + 5, ey - 4);
+        ctx.lineTo(ex + 5.5, ey + 9);
+        ctx.quadraticCurveTo(ex + 3, ey + 11, ex, ey + 11);
+        ctx.quadraticCurveTo(ex - 3, ey + 11, ex - 5.5, ey + 9);
+        ctx.lineTo(ex - 5, ey - 4);
+        ctx.quadraticCurveTo(ex - 5, ey - 12, ex, ey - 18);
+        ctx.closePath();
+        ctx.stroke();
+        // Hit flash overlay
         if (e.hitFlash && e.hitFlash > 0) {
             ctx.fillStyle = 'rgba(255, 255, 255, ' + (e.hitFlash * 0.6) + ')';
             ctx.beginPath();
@@ -6118,90 +7049,187 @@ function drawPlayer() {
         }
     }
 
-    // ===== BOMBER: large slow plane =====
+    // ===== BOMBER: P-38 Lightning inspired twin-engine fighter/heavy =====
+    // Distinctive twin-boom layout — two engine nacelles extending outboard, joined
+    // by a horizontal wing, with a slim CENTRAL nacelle (the pilot pod) sitting
+    // between them. Spans ±28 wide so it reads as the largest mook.
     function drawBomberEnemy(e) {
         const ex = e.x, ey = e.y;
-        // Shadow
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        // NOTE (2026-09): drop shadow removed — see drawScoutEnemy.
+        // ===== Main wing — horizontal slab connecting the two booms =====
+        ctx.fillStyle = GRAD_CACHE.bomberWing;
         ctx.beginPath();
-        ctx.ellipse(ex + 2, ey + 3, 18, 18, 0, 0, Math.PI * 2);
+        ctx.moveTo(ex - 28, ey - 2);
+        ctx.quadraticCurveTo(ex - 22, ey - 5, ex - 14, ey - 4);
+        ctx.lineTo(ex + 14, ey - 4);
+        ctx.quadraticCurveTo(ex + 22, ey - 5, ex + 28, ey - 2);
+        ctx.quadraticCurveTo(ex + 28, ey + 5, ex + 14, ey + 6);
+        ctx.lineTo(ex - 14, ey + 6);
+        ctx.quadraticCurveTo(ex - 28, ey + 5, ex - 28, ey - 2);
+        ctx.closePath();
         ctx.fill();
-        // Big wings — PERF: cached gradient
-        ctx.fillStyle = GRAD_CACHE.heavyWing;
+        // ===== Twin tail booms (extending from each engine nacelle rearward) =====
+        // Left boom
+        ctx.fillStyle = GRAD_CACHE.bomberBody;
         ctx.beginPath();
-        ctx.moveTo(ex - 8, ey - 4);
-        ctx.lineTo(ex - 28, ey - 2);
-        ctx.lineTo(ex - 30, ey + 8);
-        ctx.lineTo(ex - 8, ey + 10);
+        ctx.moveTo(ex - 19, ey - 2);
+        ctx.lineTo(ex - 21, ey + 12);
+        ctx.lineTo(ex - 15, ey + 12);
+        ctx.lineTo(ex - 13, ey - 2);
+        ctx.closePath();
+        ctx.fill();
+        // Right boom
+        ctx.beginPath();
+        ctx.moveTo(ex + 19, ey - 2);
+        ctx.lineTo(ex + 21, ey + 12);
+        ctx.lineTo(ex + 15, ey + 12);
+        ctx.lineTo(ex + 13, ey - 2);
+        ctx.closePath();
+        ctx.fill();
+        // ===== Outboard engine nacelles (cylindrical pods at wingtips) =====
+        ctx.fillStyle = '#3F4754';
+        ctx.beginPath();
+        ctx.ellipse(ex - 25, ey, 4, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(ex + 25, ey, 4, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Propeller disks (light blur effect) at each nacelle tip
+        ctx.fillStyle = 'rgba(220, 230, 240, 0.55)';
+        ctx.beginPath();
+        ctx.ellipse(ex - 28, ey, 1.8, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(ex + 28, ey, 1.8, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Propeller hub dots
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath();
+        ctx.arc(ex - 28, ey, 0.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(ex + 28, ey, 0.8, 0, Math.PI * 2);
+        ctx.fill();
+        // ===== Central nacelle (pilot pod) — distinctive P-38 feature =====
+        ctx.fillStyle = GRAD_CACHE.bomberBody;
+        ctx.beginPath();
+        ctx.moveTo(ex, ey - 14);
+        ctx.quadraticCurveTo(ex + 4.5, ey - 10, ex + 4.5, ey - 4);
+        ctx.lineTo(ex + 4.5, ey + 8);
+        ctx.quadraticCurveTo(ex + 2.5, ey + 10, ex, ey + 10);
+        ctx.quadraticCurveTo(ex - 2.5, ey + 10, ex - 4.5, ey + 8);
+        ctx.lineTo(ex - 4.5, ey - 4);
+        ctx.quadraticCurveTo(ex - 4.5, ey - 10, ex, ey - 14);
+        ctx.closePath();
+        ctx.fill();
+        // ===== Twin tail fins (the iconic "fork-tailed" P-38 silhouette) =====
+        ctx.fillStyle = '#5C6A78';
+        ctx.beginPath();
+        ctx.moveTo(ex - 21, ey + 9);
+        ctx.lineTo(ex - 24, ey + 18);
+        ctx.lineTo(ex - 20, ey + 18);
+        ctx.lineTo(ex - 17, ey + 9);
         ctx.closePath();
         ctx.fill();
         ctx.beginPath();
-        ctx.moveTo(ex + 8, ey - 4);
-        ctx.lineTo(ex + 28, ey - 2);
-        ctx.lineTo(ex + 30, ey + 8);
-        ctx.lineTo(ex + 8, ey + 10);
+        ctx.moveTo(ex + 21, ey + 9);
+        ctx.lineTo(ex + 24, ey + 18);
+        ctx.lineTo(ex + 20, ey + 18);
+        ctx.lineTo(ex + 17, ey + 9);
         ctx.closePath();
         ctx.fill();
-        // Tail wings
-        ctx.fillStyle = '#555555';
+        // Horizontal stabilizer between the two fins
+        ctx.fillStyle = '#7A8894';
         ctx.beginPath();
-        ctx.moveTo(ex - 8, ey + 8);
-        ctx.lineTo(ex - 18, ey + 16);
-        ctx.lineTo(ex - 6, ey + 18);
-        ctx.lineTo(ex, ey + 12);
+        ctx.moveTo(ex - 22, ey + 16);
+        ctx.lineTo(ex + 22, ey + 16);
+        ctx.lineTo(ex + 22, ey + 18);
+        ctx.lineTo(ex - 22, ey + 18);
         ctx.closePath();
         ctx.fill();
+        // ===== Canopy (pilot greenhouse atop the central nacelle) =====
+        ctx.fillStyle = GRAD_CACHE.bomberCanopy;
         ctx.beginPath();
-        ctx.moveTo(ex + 8, ey + 8);
-        ctx.lineTo(ex + 18, ey + 16);
-        ctx.lineTo(ex + 6, ey + 18);
-        ctx.lineTo(ex, ey + 12);
-        ctx.closePath();
+        ctx.ellipse(ex, ey - 8, 3, 3.5, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Body (gray) — PERF: cached gradient
-        ctx.fillStyle = GRAD_CACHE.heavyBody;
+        ctx.strokeStyle = '#2A3640';
+        ctx.lineWidth = 0.4;
+        ctx.stroke();
+        // ===== USAAC white star roundel on each wing =====
+        ctx.fillStyle = '#F0F0E8';
         ctx.beginPath();
-        ctx.moveTo(ex, ey - 20);
-        ctx.lineTo(ex + 7, ey - 8);
-        ctx.lineTo(ex + 8, ey + 12);
-        ctx.lineTo(ex - 8, ey + 12);
-        ctx.lineTo(ex - 7, ey - 8);
-        ctx.closePath();
+        ctx.arc(ex - 19, ey + 1, 1.8, 0, Math.PI * 2);
         ctx.fill();
-        // Cockpit
-        ctx.fillStyle = '#FFDD44';
+        ctx.fillStyle = '#3A4858';
         ctx.beginPath();
-        ctx.ellipse(ex, ey - 6, 2.5, 5, 0, 0, Math.PI * 2);
+        ctx.arc(ex - 19, ey + 1, 0.9, 0, Math.PI * 2);
         ctx.fill();
-        // Bomb symbols (yellow triangles under wings)
-        ctx.fillStyle = '#FFCC00';
-        for (let bx = -22; bx <= 22; bx += 22) {
-            ctx.beginPath();
-            ctx.moveTo(ex + bx - 2, ey + 10);
-            ctx.lineTo(ex + bx + 2, ey + 10);
-            ctx.lineTo(ex + bx, ey + 13);
-            ctx.closePath();
-            ctx.fill();
-        }
-        // Engine glow
-        for (let eng = -1; eng <= 1; eng += 2) {
-            ctx.fillStyle = 'rgba(255, 100, 0, 0.5)';
-            ctx.beginPath();
-            ctx.arc(ex + eng * 5, ey + 14, 2, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        // Outline
-        ctx.strokeStyle = '#222222';
-        ctx.lineWidth = 0.5;
+        ctx.fillStyle = '#F0F0E8';
         ctx.beginPath();
-        ctx.moveTo(ex, ey - 20);
-        ctx.lineTo(ex + 7, ey - 8);
-        ctx.lineTo(ex + 8, ey + 12);
-        ctx.lineTo(ex - 8, ey + 12);
-        ctx.lineTo(ex - 7, ey - 8);
+        ctx.arc(ex + 19, ey + 1, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#3A4858';
+        ctx.beginPath();
+        ctx.arc(ex + 19, ey + 1, 0.9, 0, Math.PI * 2);
+        ctx.fill();
+        // Wing outline (top arc) — thickened (2026-09) from 0.5 to 1.5 so the
+        // twin-boom silhouette stays legible without the drop shadow.
+        ctx.strokeStyle = '#161B22';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(ex - 28, ey - 2);
+        ctx.quadraticCurveTo(ex - 22, ey - 5, ex - 14, ey - 4);
+        ctx.lineTo(ex + 14, ey - 4);
+        ctx.quadraticCurveTo(ex + 22, ey - 5, ex + 28, ey - 2);
+        ctx.quadraticCurveTo(ex + 28, ey + 5, ex + 14, ey + 6);
+        ctx.lineTo(ex - 14, ey + 6);
+        ctx.quadraticCurveTo(ex - 28, ey + 5, ex - 28, ey - 2);
         ctx.closePath();
         ctx.stroke();
-        // Hit flash
+        // Fuselage outline (inherits the 1.5 lineWidth set for the wing)
+        ctx.strokeStyle = '#161B22';
+        ctx.beginPath();
+        ctx.moveTo(ex, ey - 14);
+        ctx.quadraticCurveTo(ex + 4.5, ey - 10, ex + 4.5, ey - 4);
+        ctx.lineTo(ex + 4.5, ey + 8);
+        ctx.quadraticCurveTo(ex + 2.5, ey + 10, ex, ey + 10);
+        ctx.quadraticCurveTo(ex - 2.5, ey + 10, ex - 4.5, ey + 8);
+        ctx.lineTo(ex - 4.5, ey - 4);
+        ctx.quadraticCurveTo(ex - 4.5, ey - 10, ex, ey - 14);
+        ctx.closePath();
+        ctx.stroke();
+        // Tail boom outlines
+        ctx.beginPath();
+        ctx.moveTo(ex - 19, ey - 2);
+        ctx.lineTo(ex - 21, ey + 12);
+        ctx.lineTo(ex - 15, ey + 12);
+        ctx.lineTo(ex - 13, ey - 2);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ex + 19, ey - 2);
+        ctx.lineTo(ex + 21, ey + 12);
+        ctx.lineTo(ex + 15, ey + 12);
+        ctx.lineTo(ex + 13, ey - 2);
+        ctx.closePath();
+        ctx.stroke();
+        // Twin tail fin outlines (2026-09) — the fork tail is the P-38's most
+        // recognisable cue, so it gets an explicit outline too.
+        ctx.beginPath();
+        ctx.moveTo(ex - 21, ey + 9);
+        ctx.lineTo(ex - 24, ey + 18);
+        ctx.lineTo(ex - 20, ey + 18);
+        ctx.lineTo(ex - 17, ey + 9);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ex + 21, ey + 9);
+        ctx.lineTo(ex + 24, ey + 18);
+        ctx.lineTo(ex + 20, ey + 18);
+        ctx.lineTo(ex + 17, ey + 9);
+        ctx.closePath();
+        ctx.stroke();
+        // Hit flash overlay
         if (e.hitFlash && e.hitFlash > 0) {
             ctx.fillStyle = 'rgba(255, 255, 255, ' + (e.hitFlash * 0.6) + ')';
             ctx.beginPath();
@@ -7274,8 +8302,13 @@ function drawPlayer() {
     }
     
     function drawExplosion() {
-        // === PERF: Fast-path rendering when overloaded (>200 particles) ===
-        var overloaded = explosions.length > 80;
+        // === PERF: Fast-path rendering when overloaded ===
+        // (2026-09) Threshold lowered from 80 → 50. createRadialGradient and
+        // shadowBlur are per-particle Canvas 2D heavy ops; with 50+ active
+        // particles (typical during mid-boss / final-boss death cascade) they
+        // visibly drop frames even on dev hardware. Crossover to the simple
+        // fillStyle + arc + fill fast path earlier.
+        var overloaded = explosions.length > 50;
         for (let i = 0; i < explosions.length; i++) {
             const e = explosions[i];
             if (!e) continue;
@@ -7925,6 +8958,11 @@ function drawPlayer() {
 
             // Detached boss wing debris (drawn between enemies and explosions so smoke overlays it)
             try { drawBossWingDebris(); } catch(e) { console.error('drawBossWingDebris:', e.message); }
+
+            // === MOOK DESTRUCTION: small detached wing/body chunks from regular enemy kills ===
+            try { drawEnemyDebris(); } catch(e) { console.error('drawEnemyDebris:', e.message); }
+            // === PLAYER DESTRUCTION: detached wing/body chunks from player death ===
+            try { drawPlayerDebris(); } catch(e) { console.error('drawPlayerDebris:', e.message); }
 
             // === FINAL BOSS INTRO (2026-09): escort caption (small, drawn under UI) ===
             try { drawBossEscortLabel(); } catch(e) { console.error('drawBossEscortLabel:', e.message); }
