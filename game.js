@@ -4,6 +4,9 @@
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+// === Sprite set (sprites.js). Guarded so the game still runs without it. ===
+if (typeof SPR === 'undefined') { window.SPR = { ready: false, img: {}, flash: {}, shadow: {}, load: function () {} }; }
+SPR.load();
 
 // ============================================
 // AUDIO SYSTEM - Web Audio API Sounds
@@ -479,7 +482,8 @@ let bossActive = false;
 let bossDefeated = false;
 let bossWaveNumber = 0;
 let bossSpawned = false;  // Guard: boss actually spawned this stage
-let bossIsFinalBoss = false;  // true = stage-end boss, false = mid-boss
+let bossIsFinalBoss = false;  // true = stage-end boss, false = mid-boss (legacy; new code uses enemy.type === 'final')
+let lastDefeatedBossWasFinal = false;  // FIX A(2): set at kill sites, read by stage-transition logic
 let bossDeathX = 0, bossDeathY = 0;  // Boss death position for explosion effect
 let midBossStreak = 0;
 
@@ -656,6 +660,13 @@ const player = {
     y: GAME_HEIGHT - 80,
     width: 62,   // +30% from 48 (user-requested: enlarge player ship)
     height: 62,  // +30% from 48
+    // === PLAYER HITBOX (2026-09, arcade-standard) ===
+    // Damageable area is much smaller than the visual sprite — keeps wing-tip
+    // near-misses from killing the player. hitW/hitH is the small fuselage box
+    // used by checkPlayerHit(); the visual width=62 is preserved for powerups
+    // (which should be easy to grab).
+    hitW: 14,
+    hitH: 18,
     speed: PLAYER_SPEED,
     powerLevel: 0,
     bombs: 3,
@@ -671,6 +682,31 @@ const player = {
     hadShield: false,  // remember shield state before V-power
     activeWeapon: 'P'  // 'P', 'W', or 'M' - tracks which weapon type is active
 };
+
+// === Debug hitbox flag (default off). Toggle window.DEBUG_HITBOX = true in
+// the dev tools console to draw the small player hitbox as a red rect.
+window.DEBUG_HITBOX = false;
+
+// === PLAYER HIT TEST (2026-09) ===
+// Replaces the two player-side AABB checks so the player fuselage has a small
+// hitbox independent of the sprite size. The incoming obj uses its own
+// width × shrink(0.6) rect (unchanged) — only the player's rect is shrunk
+// to hitW/hitH so wing-tip near-misses no longer register as hits.
+function checkPlayerHit(obj) {
+    const shrink = 0.6;
+    const aW = player.hitW;
+    const aH = player.hitH;
+    const aX = player.x - aW / 2;
+    const aY = player.y - aH / 2;
+    const bW = obj.width * shrink;
+    const bH = obj.height * shrink;
+    const bX = obj.x - bW / 2;
+    const bY = obj.y - bH / 2;
+    return aX < bX + bW &&
+           aX + aW > bX &&
+           aY < bY + bH &&
+           aY + aH > bY;
+}
 
 // Input
 const keys = {};
@@ -698,13 +734,6 @@ let bossWingDebris = [];
 // kills feel impactful (small chunks that detach + fall with gravity) without
 // the multi-stage cascade reserved for the mid-boss.
 let enemyDebris = [];
-
-// === PLAYER DESTRUCTION: detached wing/body debris for the player's plane ===
-// Same idea as enemyDebris but with player colors + larger chunks. The existing
-// playerHit() already emits a fire/smoke/spark cluster (small explosion) but
-// without an actual rotating wing piece the death reads as "smoke puff" rather
-// than "plane broke apart". The playerDebris array fills that gap.
-let playerDebris = [];
 
 // Background stars
 for (let i = 0; i < 100; i++) {
@@ -1087,6 +1116,14 @@ function startGame() {
     spawnBoost = 0;
     noSpawnCounter = 0;
     screenShake = 0;
+    // === FORMATION RESET (2026-09) ===
+    // Wipe formation-bonus state so a new game starts clean.
+    for (const fk in formationKills) {
+        if (Object.prototype.hasOwnProperty.call(formationKills, fk)) delete formationKills[fk];
+    }
+    formationSpawnCounter = 0;
+    bonusText = '';
+    bonusTimer = 0;
     bgStars = [];
     cloudLayer = [];
     // Initialize background stars
@@ -1383,6 +1420,7 @@ function useBomb() {
             // Final boss is bomb-immune: only deal small damage, never destroy
             const dmg = Math.max(1, Math.floor(en.hp * bombDamagePct));
             en.hp -= dmg;
+            en.hitFlash = 1;
             createExplosion(en.x, en.y, 4);
             finalBossHit = true;
             if (en.hp < 0) en.hp = 1; // safety floor so it can't be destroyed by bomb alone
@@ -1747,9 +1785,10 @@ function spawnEnemy() {
             // Heavy bomber mid-boss (replaces octopus) - aerial, slow, fires homing missiles from both wings
             enemy.isMidBoss = true; // CRITICAL: required for dying-fall to trigger on kill
             enemy.isHeavyBomber = true;
-            // (2026-09 bugfix) Clear bossIsFinalBoss flag — this spawn is a MID-boss, not final.
-            // Without this, the flag leaks across stages once a final boss has ever appeared.
-            bossIsFinalBoss = false;
+            // NOTE: previously cleared bossIsFinalBoss here; v13 removed that flag-reset
+            // because heavyBomber spawns mid-boss WHILE the final boss is still alive on
+            // stage >= 2, which broke the dying-cascade / hyperspace trigger. The flag is
+            // now reset only at: stage spawn (1500), stage transition (5478), new game (1031/1072).
             enemy.hp = Math.round((((3 + currentStage * 3) * 0.7) + 2) * 3.2); // +220% tankier than baseline (1.6× + additional 100%)
             enemy.maxHp = enemy.hp;
             enemy.speed = 0.4 + currentStage * 0.05;
@@ -1831,23 +1870,342 @@ function spawnEnemy() {
     enemies.push(enemy);
 }
 
+// ====================================================================
+// === FORMATION SYSTEM (2026-09) ======================================
+// ====================================================================
+// "편대" — a coordinated group of mooks (5 scouts in V or 3 fighters
+// in line) that descends from the top of the screen in lockstep.
+// Clearing the entire formation awards FORMATION BONUS (+1000 × stage)
+// + a free powerup at the last-killed position. Formation mooks are
+// just regular enemies with two extra fields (formationId, formationSize)
+// so all existing collision, scoring, AI, and draw code stays untouched.
+// ====================================================================
+
+// Per-formation kill counter — keyed by formationId so simultaneous
+// formations never cross-pollute. -999 means "voided, no bonus will
+// trigger" (used when any member escapes off-screen).
+const formationKills = Object.create(null);
+
+// Counts how many spawn() calls elapsed since the last formation spawn.
+// Stage 1: every 6th normal spawn → formation. Stage 2+: every 4th.
+let formationSpawnCounter = 0;
+
+// Formation bonus UI (mirrors waveAnnounceText / waveAnnounceTimer).
+let bonusText = '';
+let bonusTimer = 0;
+
+// === COMBO TIER BONUS (v16) ============================================
+// Tiered combo bonus scale (replaces the linear `comboCount * 50` of v15).
+// 1 kill gives 0 (no bonus for the first kill — just builds the streak).
+// The chart: 2..4 → 50, 5..9 → 100, 10..19 → 250, 20..29 → 500, 30+ → 1000.
+function comboBonus(n) {
+    if (n >= 30) return 1000;
+    if (n >= 20) return 500;
+    if (n >= 10) return 250;
+    if (n >= 5) return 100;
+    if (n >= 2) return 50;
+    return 0;
+}
+
+// === COMBO TIER ENTRY BANNER (v16) =====================================
+// Pops a short "COMBO xN!" banner at the first kill that crosses 5, 10,
+// 20, or 30. Reuses the v15 bonusText/bonusTimer pair so we don't grow
+// the HUD surface area. Guards against stomping an active formation-bonus
+// banner — we only fire if the banner is currently idle.
+function maybeShowComboTierText(n) {
+    if (n !== 5 && n !== 10 && n !== 20 && n !== 30) return;
+    // Don't trample an in-progress formation-bonus banner.
+    if (bonusTimer > 0 && bonusText) return;
+    bonusText = 'COMBO x' + n + '!';
+    bonusTimer = 42; // 0.7s @ 60fps
+}
+
+// === FORMATION BONUS RENDERER (2026-09) ===
+// Golden "FORMATION BONUS +N" banner, 1-second centered. Same Press Start 2P
+// font as the rest of the HUD (12px) with the requested gold fill + dark
+// brown 2px shadow. Safe to call every frame — exits fast when the timer
+// is 0.
+function drawFormationBonusBanner() {
+    if (bonusTimer <= 0 || !bonusText) return;
+    const remain = bonusTimer / 60; // 1.0 → 0.0
+    // Fade in fast (first 0.2s) and out gently (last 0.4s).
+    let alpha = 1;
+    if (remain > 0.85) alpha = (1 - remain) / 0.15;
+    else if (remain < 0.4) alpha = remain / 0.4;
+    alpha = Math.max(0, Math.min(1, alpha));
+    const y = Math.floor(GAME_HEIGHT / 2 - 40);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = '12px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    // 2px dark-brown shadow (offset +2,+2)
+    ctx.fillStyle = '#4A2500';
+    ctx.fillText(bonusText, GAME_WIDTH / 2 + 2, y + 2);
+    // Gold fill
+    ctx.fillStyle = '#FFD43A';
+    ctx.fillText(bonusText, GAME_WIDTH / 2, y);
+    ctx.restore();
+}
+
+// === Mook counter (for the "density < 4 → extra spawn" guard) ===
+function countMooks() {
+    let n = 0;
+    for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (!e) continue;
+        // Exclude mid-bosses and final boss from the mook count.
+        if (e.isWaveBoss) continue;
+        if (e.isMidBoss) continue;
+        if (e.isBossEscort) continue;
+        if (e.dying) continue;
+        n++;
+    }
+    return n;
+}
+
+// === V-shape helper ===
+// 5 scouts arranged as a leader + 2 pairs behind. Offsets are
+// (offsetX, offsetY) pairs where offsetY is "behind" (positive = down).
+// Since the formation descends and all members share one speed, the V
+// silhouette is preserved as long as no member takes _sweep / _orbit.
+function formationScoutOffsets() {
+    return [
+        { offsetX:   0, offsetY:  0 },  // leader (forward)
+        { offsetX: -40, offsetY: 30 },  // left wing #1  (sprites are ~58px wide → no overlap)
+        { offsetX:  40, offsetY: 30 },  // right wing #1
+        { offsetX: -80, offsetY: 60 },  // left wing #2
+        { offsetX:  80, offsetY: 60 },  // right wing #2
+    ];
+}
+
+// === 3-ship line helper ===
+// 3 fighters at 44px horizontal intervals, same Y (line abreast).
+function formationFighterOffsets() {
+    return [
+        { offsetX: -76, offsetY: 0 },   // fighters draw ~68px wide → 76px pitch keeps a gap
+        { offsetX:   0, offsetY: 0 },
+        { offsetX:  76, offsetY: 0 },
+    ];
+}
+
+// === Shared formation-spawn body ===
+// Picks scout-V (5) or fighter-line (3), assigns formationId + Size, and
+// pushes each mook into enemies[]. Uses a snapshotted "reference" enemy
+// built via the same well-trodden paths as spawnEnemy() — same _sweep
+// defaults, same _orbit false state, same top-side entry — so the V
+// silhouette is preserved as the group descends together.
+function spawnFormation() {
+    if (bossActive) return; // never spawn during boss / siren / escort
+    // === (v16) COLUMN FORMATION — late-game third option ===
+    // When the player is deep into a stage (stageWave >= 8) or has moved
+    // beyond stage 1, a third of all formation spawns should be a vertical
+    // column of 6 scouts that swoops down, orbits once around y≈300, and
+    // peels off sideways. The two legacy formations (V / line-abreast) keep
+    // running unchanged for the remaining 67%.
+    const columnEligible = (stageWave >= 8 || currentStage >= 2);
+    const useColumn = columnEligible && Math.random() < 0.333;
+    if (useColumn) {
+        spawnColumnFormation();
+        return;
+    }
+    // Pick V vs line (random 50/50 each formation).
+    const isV = Math.random() < 0.5;
+    const offsets = isV ? formationScoutOffsets() : formationFighterOffsets();
+    const type = isV ? 'scout' : 'fighter';
+    // Leader x in [120, 360]. Y far above the screen.
+    const cx = 120 + Math.random() * 240;
+    const cy = -60 - Math.random() * 40;
+    // One formation id for this group.
+    const id = 'F' + frameCount + '_' + Math.floor(Math.random() * 100000);
+    // All members must move at the same speed and the same straight-down
+    // trajectory to keep the silhouette intact.
+    const sharedSpeed = ENEMY_BASE_SPEED + (isV ? 0 : -0.2);
+    for (let i = 0; i < offsets.length; i++) {
+        const o = offsets[i];
+        const x = cx + o.offsetX;
+        const y = cy + o.offsetY;
+        // === Inline replica of spawnEnemy's scout/fighter objects ===
+        // Mirrors the exact field set spawnEnemy() would produce for the
+        // same type, with _sweep=false to guarantee straight descent and
+        // no orbit (so the V/line stays locked).
+        const e = {
+            x: x,
+            y: y,
+            width: (type === 'scout') ? 60 : 72,
+            height: (type === 'scout') ? 60 : 72,
+            type: type,
+            hp: (type === 'scout') ? 1 : 2,
+            maxHp: (type === 'scout') ? 1 : 2,
+            speed: sharedSpeed,
+            score: (type === 'scout') ? 100 : 200,
+            shootCooldown: Math.random() * 60 + 30,
+            angle: 0,
+            phase: Math.random() * Math.PI * 2,
+            _spawnSide: 'top',
+            _sweep: false,
+            _sweepPhase: 0,
+            _sweepDir: 0,
+            _sweepBaseX: 0,
+            _orbitActive: false,
+            _orbitAngle: 0,
+            _orbitRadius: 0,
+            _orbitAngularSpeed: 0,
+            _orbitDir: 1,
+            _orbitLifetime: 0,
+            _orbitMaxLifetime: (type === 'scout') ? 150 : 240,
+            _orbitExitDir: 1,
+            // === Formation membership ===
+            formationId: id,
+            formationSize: offsets.length,
+            drawScale: 1.7
+        };
+        e._id = 'enemy_' + frameCount + '_' + Math.random() + '_f';
+        enemies.push(e);
+    }
+}
+
+// === (v16) COLUMN FORMATION BUILDER =====================================
+// 6 scouts in a vertical line, 52px pitch. Entry x is the left or right
+// third of the screen. Each plane is a regular scout object with extra
+// pathing fields (_pathMode/_pathPhase/_pathAngle/_pathCenterX/Y/_pathDir)
+// so the update loop can run the 3-phase trajectory (descent → orbit →
+// cross-screen exit) without touching the type='scout' branch.
+function spawnColumnFormation() {
+    if (bossActive) return;
+    const COL_SIZE = 6;
+    const COL_PITCH = 52;             // y-spacing between stacked planes
+    const entryLeft = Math.random() < 0.5;
+    const cx = entryLeft ? 110 : 370; // left/right third of screen
+    const cy = -60 - Math.random() * 40;
+    const id = 'F' + frameCount + '_' + Math.floor(Math.random() * 100000);
+    // Counterclockwise from left side, clockwise from right side (player POV).
+    const pathDir = entryLeft ? -1 : 1;
+    // Each member's starting angle on the orbit circle. Stagger so the
+    // column appears as 6 planes spaced 52px apart while they transition
+    // into the circle.
+    for (let i = 0; i < COL_SIZE; i++) {
+        const startY = cy - i * COL_PITCH;
+        const e = {
+            x: cx,
+            y: startY,
+            width: 60,
+            height: 60,
+            type: 'scout',
+            hp: 1,
+            maxHp: 1,
+            speed: ENEMY_BASE_SPEED * 1.1,   // shared descent speed (v16)
+            score: 100,
+            // 1.2s initial cadence = 72 frames (then every 72 thereafter).
+            shootCooldown: 72 + i * 8,        // slight stagger so they don't fire as one salvo
+            angle: 0,
+            phase: Math.random() * Math.PI * 2,
+            _spawnSide: 'top',
+            _sweep: false,
+            _sweepPhase: 0,
+            _sweepDir: 0,
+            _sweepBaseX: 0,
+            _orbitActive: false,
+            _orbitAngle: 0,
+            _orbitRadius: 0,
+            _orbitAngularSpeed: 0,
+            _orbitDir: 1,
+            _orbitLifetime: 0,
+            _orbitMaxLifetime: 150,
+            _orbitExitDir: 1,
+            // === (v16) COLUMN PATHING ===
+            _pathMode: 'column',
+            _pathPhase: 0,                    // 0=descent 1=orbit 2=exit
+            _pathAngle: 0,                    // current angle on the orbit circle (radians)
+            _pathCenterX: cx,                 // orbit center x
+            _pathCenterY: GAME_HEIGHT * 0.42, // ≈ 300 on a 720-tall canvas
+            _pathDir: pathDir,                // -1 ccw, +1 cw (player POV)
+            _pathShootTimer: (i * 12) | 0,    // per-plane stagger so they don't fire on the same frame
+            // === Formation membership ===
+            formationId: id,
+            formationSize: COL_SIZE,
+            drawScale: 1.7
+        };
+        e._id = 'enemy_' + frameCount + '_' + Math.random() + '_c';
+        enemies.push(e);
+    }
+}
+
+// === Formation-bonus activation ===
+// Called from every kill site once a formation member is confirmed dead.
+// Returns true iff the bonus just triggered (caller can suppress any
+// subsequent drops or chains at its discretion — we keep everything else
+// intact per the user's "로직은 그대로" rule).
+function tryFormationBonus(member) {
+    if (!member || !member.formationId) return false;
+    const id = member.formationId;
+    // Already voided → no further bonuses.
+    if (formationKills[id] === -999) return false;
+    formationKills[id] = (formationKills[id] || 0) + 1;
+    if (formationKills[id] !== member.formationSize) return false;
+    // All members killed cleanly → award the bonus.
+    score += 1000 * currentStage;
+    // Drop a GUARANTEED powerup at the kill position (spawnPowerup rolls an
+    // 8% chance, so push directly; no V here — V stays a boss reward).
+    if (!player.vPowerActive) {
+        let ftypes = ['power', 'powerW', 'powerM', 'bomb', 'shield', 'drone']; if (currentStage < 4) ftypes = ftypes.filter(function (t) { return t !== 'powerW'; });
+        powerups.push({ x: member.x, y: member.y, width: 24, height: 24, type: ftypes[Math.floor(Math.random() * ftypes.length)], speed: 1.5 });
+    }
+    // Show the 1-second bonus banner.
+    bonusText = 'FORMATION BONUS +' + (1000 * currentStage);
+    bonusTimer = 60;
+    return true;
+}
+
+// === Formation voiding ===
+// Called from update() every frame: if any member of the formation has
+// exited the playfield without being killed, the bonus is voided.
+function invalidateOffscreenFormations() {
+    const seen = Object.create(null);
+    for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (!e || !e.formationId) continue;
+        seen[e.formationId] = true;
+        // === (v16) Column formations exit deliberately via phase 2
+        // (horizontal cross-screen fly-off). That exit is by design, not
+        // a fail-state, so we don't void the bonus for those members.
+        if (e._pathMode === 'column' && e._pathPhase === 2) continue;
+        // Off-screen bounds — generous boxes so a brief hover at the
+        // edge doesn't void the bonus prematurely.
+        if (e.x < -20 || e.x > GAME_WIDTH + 20 || e.y > GAME_HEIGHT + 20) {
+            formationKills[e.formationId] = -999;
+        }
+    }
+    // Optional cleanup so the map doesn't grow unbounded (also lets
+    // formations far below 0 accumulate '-999' voided markers that we
+    // can reclaim here).
+    for (const k in formationKills) {
+        if (Object.prototype.hasOwnProperty.call(formationKills, k) && !(k in seen)) {
+            // The formation is fully gone (all killed or all voided).
+            // Leave the value alone — tryFormationBonus checks -999 and
+            // a non-vanished key with value 'count' is harmless.
+        }
+    }
+}
+
 function spawnPowerup(x, y, isBossKill) {
     // No powerups drop during V-Power mode
     if (player.vPowerActive) return;
     // First 9 waves (before boss): 50% higher item drop rate for better survivability
     // From wave 10 (boss appears): original rate
-    const dropRate = wave < 10 ? 0.0804375 : 0.053625;
+    // (2026-09) halved: v15 doubled the kill rate, so 8% felt like an item rain.
+    const dropRate = wave < 10 ? 0.04 : 0.028;
     if (Math.random() > dropRate && !isBossKill) return;
     
     let types;
     if (isBossKill) {
         // Boss kill: guaranteed V powerup + chance for others
-        types = ['powerV', 'power', 'powerW', 'powerM', 'bomb', 'shield'];
+        types = ['powerV', 'power', 'powerW', 'powerM', 'bomb', 'shield']; if (currentStage < 4) types = types.filter(function (t) { return t !== 'powerW'; });
     } else if (bossActive) {
         // During boss fight: V powerup can appear but rarely
-        types = ['powerV', 'power', 'powerW', 'powerM', 'powerW', 'powerW', 'bomb', 'bomb', 'shield', 'drone', 'droneR'];
+        types = ['powerV', 'power', 'powerW', 'powerM', 'powerW', 'powerW', 'bomb', 'bomb', 'shield', 'drone', 'droneR']; if (currentStage < 4) types = types.filter(function (t) { return t !== 'powerW'; });
     } else {
-        types = ['powerV', 'power', 'powerW', 'powerM', 'powerW', 'powerW', 'bomb', 'bomb', 'shield', 'drone', 'droneR'];
+        types = ['powerV', 'power', 'powerW', 'powerM', 'powerW', 'powerW', 'bomb', 'bomb', 'shield', 'drone', 'droneR']; if (currentStage < 4) types = types.filter(function (t) { return t !== 'powerW'; });
     }
     const type = types[Math.floor(Math.random() * types.length)];
     
@@ -1970,15 +2328,6 @@ function updateBossIntro() {
         // Reap off-screen escorts
         if (enemies.some(e => e && e.markRemove)) {
             enemies = enemies.filter(e => !e.markRemove);
-        }
-
-        // === (2026-09) Decay entry-invulnerability timer on all enemies. ===
-        // Once it hits zero the boss takes damage normally. Decrement every frame
-        // (cheap — short loop) so the window is measured in real frames, not game
-        // events.
-        for (let i = 0; i < enemies.length; i++) {
-            const ee = enemies[i];
-            if (ee && ee.entryInvuln && ee.entryInvuln > 0) ee.entryInvuln--;
         }
 
         // Count remaining escorts
@@ -2121,37 +2470,37 @@ function createEnemyDebris(enemy) {
     // LEFT WING — slab, kicked outward to the left
     enemyDebris.push({
         x: baseX - 6, y: baseY + 1,
-        vx: -4.6 + (Math.random() - 0.5) * 1.8,
-        vy: -2.6 + Math.random() * 1.0,
-        rotSpeed: -0.32 + (Math.random() - 0.5) * 0.14,
+        vx: -4.2 + (Math.random() - 0.5) * 1.6,
+        vy: -2.2 + Math.random() * 1.0,
+        rotSpeed: -0.30 + (Math.random() - 0.5) * 0.14,
         angle: 0,
         side: 'left',
-        size: Math.round(17 * sizeMul),
-        life: 200,
+        size: Math.round(16 * sizeMul),
+        life: 44 + Math.floor(Math.random() * 12),   // (2026-09) short arc, fades mid-air
         colorA: wingFill, colorB: wingStroke, accent: wingAccent
     });
     // RIGHT WING — mirror
     enemyDebris.push({
         x: baseX + 6, y: baseY + 1,
-        vx: 4.6 + (Math.random() - 0.5) * 1.8,
-        vy: -2.6 + Math.random() * 1.0,
-        rotSpeed: 0.32 + (Math.random() - 0.5) * 0.14,
+        vx: 4.2 + (Math.random() - 0.5) * 1.6,
+        vy: -2.2 + Math.random() * 1.0,
+        rotSpeed: 0.30 + (Math.random() - 0.5) * 0.14,
         angle: 0,
         side: 'right',
-        size: Math.round(17 * sizeMul),
-        life: 200,
+        size: Math.round(16 * sizeMul),
+        life: 44 + Math.floor(Math.random() * 12),   // (2026-09) short arc, fades mid-air
         colorA: wingFill, colorB: wingStroke, accent: wingAccent
     });
     // FUSELAGE CHUNK — small triangle that spins in place and falls faster
     enemyDebris.push({
         x: baseX, y: baseY + 2,
-        vx: (Math.random() - 0.5) * 2.4,
-        vy: -3.0 + Math.random() * 0.9,
-        rotSpeed: 0.36 + (Math.random() - 0.5) * 0.16,
+        vx: (Math.random() - 0.5) * 2.2,
+        vy: -2.6 + Math.random() * 0.9,
+        rotSpeed: 0.34 + (Math.random() - 0.5) * 0.16,
         angle: 0,
         side: 'body',
-        size: Math.round(14 * sizeMul),
-        life: 175,
+        size: Math.round(13 * sizeMul),
+        life: 40 + Math.floor(Math.random() * 12),
         colorA: wingFill, colorB: wingStroke, accent: '#FFCC44'
     });
     // TAIL / OUTER-PANEL SHARDS (2026-09) — two extra smaller chunks flung on a
@@ -2161,30 +2510,16 @@ function createEnemyDebris(enemy) {
         var sdir = sh2 === 0 ? -1 : 1;
         enemyDebris.push({
             x: baseX + sdir * 3, y: baseY + 4,
-            vx: sdir * (2.4 + Math.random() * 2.2),
-            vy: -3.4 + Math.random() * 1.2,
-            rotSpeed: sdir * (0.40 + Math.random() * 0.18),
+            vx: sdir * (2.0 + Math.random() * 2.0),
+            vy: -3.0 + Math.random() * 1.2,
+            rotSpeed: sdir * (0.38 + Math.random() * 0.18),
             angle: 0,
             side: sdir < 0 ? 'left' : 'right',
-            size: Math.round(10 * sizeMul),
-            life: 150,
+            size: Math.round(9 * sizeMul),
+            life: 36 + Math.floor(Math.random() * 10),
             colorA: wingFill, colorB: wingStroke, accent: wingAccent
         });
     }
-    // (2026-09) Extra COCKPIT/NOSE chunk — small bright wedge that tumbles off
-    // the front of the plane. Adds a 6th piece so the destruction count feels
-    // chunky rather than a 3-piece "pop".
-    enemyDebris.push({
-        x: baseX, y: baseY - 8,
-        vx: (Math.random() - 0.5) * 3.0,
-        vy: -3.6 + Math.random() * 0.6,
-        rotSpeed: (Math.random() - 0.5) * 0.45,
-        angle: 0,
-        side: 'nose',
-        size: Math.round(9 * sizeMul),
-        life: 160,
-        colorA: '#FFE680', colorB: wingStroke, accent: '#FFCC44'
-    });
 
     // Spark cluster at the wing-break points — more sparks (8) so the impact
     // flashes briefly.
@@ -2226,7 +2561,7 @@ function updateEnemyDebris() {
     for (var di = enemyDebris.length - 1; di >= 0; di--) {
         var d = enemyDebris[di];
         if (!d) continue;
-        d.vy += 0.14;       // gravity — stronger than boss wings so they fall fast
+        d.vy += 0.10;       // gravity (2026-09: lighter — pieces tumble then dissolve mid-air)
         d.vx *= 0.992;      // mild air drag
         d.x += d.vx;
         d.y += d.vy;
@@ -2258,6 +2593,15 @@ function drawEnemyDebris() {
     for (var di = 0; di < enemyDebris.length; di++) {
         var d = enemyDebris[di];
         if (!d) continue;
+        // (2026-09) dissolve: last 20 frames fade + shrink so pieces vanish in
+        // mid-air like the mid-boss wreckage instead of dropping off the bottom
+        ctx.save();
+        if (d.life < 20) {
+            var fade = Math.max(0, d.life / 20);
+            ctx.globalAlpha *= fade;
+            ctx.translate(d.x, d.y); ctx.scale(0.5 + fade * 0.5, 0.5 + fade * 0.5); ctx.translate(-d.x, -d.y);
+        }
+        if (!d) continue;
         ctx.save();
         ctx.translate(d.x, d.y);
         ctx.rotate(d.angle);
@@ -2265,8 +2609,8 @@ function drawEnemyDebris() {
         // Thicker slab (was 3) — paired with the boosted debris size so each chunk
         // actually reads as "a piece of wing" rather than a thin line.
         var sh = 7;
-        if (d.side === 'body' || d.side === 'nose') {
-            // Fuselage / nose triangle — chunk of body tumbling down
+        if (d.side === 'body') {
+            // Fuselage triangle — chunk of body tumbling down
             ctx.fillStyle = d.colorA;
             ctx.strokeStyle = d.colorB;
             ctx.lineWidth = 1;
@@ -2326,225 +2670,13 @@ function drawEnemyDebris() {
             ctx.stroke();
         }
         ctx.restore();
-    }
-}
-
-// === PLAYER DESTRUCTION: detached wing/body debris for the player's plane ===
-// Mirrors the enemyDebris pattern but uses the player's gold/yellow palette so
-// the broken pieces are instantly recognizable as "what was the player's ship".
-// Chunks are ~40% larger than mook debris and live a bit longer (player death is
-// the most cinematic moment, the debris should linger through the slow-mo).
-function createPlayerDebris(px, py) {
-    if (typeof px !== 'number' || typeof py !== 'number') return;
-    // Cap concurrent player debris. Older pieces get culled if a chain reaction
-    // somehow fires multiple times in one frame.
-    var softCap = 28;
-    while (playerDebris.length > softCap) playerDebris.shift();
-
-    // Player palette (matches the gold/yellow player plane accent)
-    var wingFill = '#F0C850';      // gold body
-    var wingStroke = '#2A2410';    // dark outline
-    var wingAccent = '#FFE680';    // bright canopy accent
-    var boomFill = '#D84030';      // red wing accent
-
-    // LEFT WING — large slab kicked out to the left
-    playerDebris.push({
-        x: px - 12, y: py + 2,
-        vx: -5.5 + (Math.random() - 0.5) * 1.8,
-        vy: -2.6 + Math.random() * 1.0,
-        rotSpeed: -0.28 + (Math.random() - 0.5) * 0.12,
-        angle: 0,
-        side: 'left',
-        size: 28,
-        life: 240,  // longer than mook debris so it lingers through slow-mo
-        colorA: wingFill, colorB: wingStroke, accent: wingAccent
-    });
-    // RIGHT WING — mirror
-    playerDebris.push({
-        x: px + 12, y: py + 2,
-        vx: 5.5 + (Math.random() - 0.5) * 1.8,
-        vy: -2.6 + Math.random() * 1.0,
-        rotSpeed: 0.28 + (Math.random() - 0.5) * 0.12,
-        angle: 0,
-        side: 'right',
-        size: 28,
-        life: 240,
-        colorA: wingFill, colorB: wingStroke, accent: wingAccent
-    });
-    // FUSELAGE CENTER — chunk of the body that tumbles end-over-end
-    playerDebris.push({
-        x: px, y: py,
-        vx: (Math.random() - 0.5) * 2.0,
-        vy: -3.0 + Math.random() * 0.8,
-        rotSpeed: 0.40 + (Math.random() - 0.5) * 0.18,
-        angle: 0,
-        side: 'body',
-        size: 22,
-        life: 220,
-        colorA: wingFill, colorB: wingStroke, accent: '#FFCC44'
-    });
-    // TAIL FIN — small wedge that flies off upward-back
-    playerDebris.push({
-        x: px, y: py + 10,
-        vx: (Math.random() - 0.5) * 3.5,
-        vy: -3.4 + Math.random() * 0.6,
-        rotSpeed: (Math.random() - 0.5) * 0.45,
-        angle: 0,
-        side: 'tail',
-        size: 18,
-        life: 200,
-        colorA: boomFill, colorB: '#3A0A0A', accent: '#FFCC44'
-    });
-    // Two small panel shards for extra scatter so the breakup reads as "plane came apart"
-    for (var sh2 = 0; sh2 < 2; sh2++) {
-        var sdir = sh2 === 0 ? -1 : 1;
-        playerDebris.push({
-            x: px + sdir * 6, y: py + 4,
-            vx: sdir * (2.4 + Math.random() * 2.0),
-            vy: -3.4 + Math.random() * 1.0,
-            rotSpeed: sdir * (0.42 + Math.random() * 0.18),
-            angle: 0,
-            side: sdir < 0 ? 'left' : 'right',
-            size: 12,
-            life: 180,
-            colorA: wingFill, colorB: wingStroke, accent: wingAccent
-        });
-    }
-}
-
-function updatePlayerDebris() {
-    for (var di = playerDebris.length - 1; di >= 0; di--) {
-        var d = playerDebris[di];
-        if (!d) continue;
-        d.vy += 0.13;       // gravity — matches enemy debris feel
-        d.vx *= 0.994;      // very mild drag (lighter than mook debris so the chunk flies a bit further)
-        d.x += d.vx;
-        d.y += d.vy;
-        d.angle += d.rotSpeed;
-        d.life--;
-        // Small smoke wisp so the chunk visibly smolders
-        if (d.life % 6 === 0 && typeof explosions !== 'undefined' &&
-            explosions.length < (typeof MAX_PARTICLES !== 'undefined' ? MAX_PARTICLES - 4 : 100)) {
-            explosions.push({
-                x: d.x + (Math.random() - 0.5) * 4,
-                y: d.y + (Math.random() - 0.5) * 4,
-                vx: (Math.random() - 0.5) * 0.25,
-                vy: -0.15 + Math.random() * 0.2,
-                life: 1.0, decay: 0.04,
-                size: 2 + Math.random() * 2,
-                color: '#666', isSmoke: true, type: 'smoke', gravity: 0.02
-            });
-        }
-        if (d.life <= 0 || d.y > GAME_HEIGHT + 60 || d.x < -80 || d.x > GAME_WIDTH + 80) {
-            playerDebris.splice(di, 1);
-        }
-    }
-}
-
-function drawPlayerDebris() {
-    for (var di = 0; di < playerDebris.length; di++) {
-        var d = playerDebris[di];
-        if (!d) continue;
-        ctx.save();
-        ctx.translate(d.x, d.y);
-        ctx.rotate(d.angle);
-        var sw = d.size;
-        var sh = 9;
-        // Fade out in the last 40% of life so chunks dissolve cleanly
-        var lifeRatio = Math.max(0, d.life / 240);
-        if (lifeRatio < 0.6) {
-            ctx.globalAlpha = Math.max(0, (lifeRatio - 0.1) / 0.5);
-        }
-        if (d.side === 'body') {
-            // Fuselage triangle — wider base than mook debris
-            ctx.fillStyle = d.colorA;
-            ctx.strokeStyle = d.colorB;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.moveTo(0, -sh - 4);
-            ctx.lineTo(sw * 0.75, sh + 2);
-            ctx.lineTo(-sw * 0.75, sh + 2);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            // Canopy highlight
-            ctx.fillStyle = d.accent || '#FFCC44';
-            ctx.beginPath();
-            ctx.ellipse(0, -2, 3, 2.2, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = d.colorB;
-            ctx.lineWidth = 0.6;
-            ctx.stroke();
-        } else if (d.side === 'tail') {
-            // Vertical stabilizer / tail fin
-            ctx.fillStyle = d.colorA;
-            ctx.strokeStyle = d.colorB;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(-sw * 0.5, -sh);
-            ctx.lineTo(sw * 0.5, -sh);
-            ctx.lineTo(sw * 0.7, sh);
-            ctx.lineTo(-sw * 0.7, sh);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-        } else if (d.side === 'left') {
-            // Wing slab extending to the LEFT, with engine pod near root
-            ctx.fillStyle = d.colorA;
-            ctx.strokeStyle = d.colorB;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.moveTo(0, -4);
-            ctx.lineTo(-sw, -sh);
-            ctx.lineTo(-sw + 3, sh);
-            ctx.lineTo(0, 5);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            // Engine pod near root (red, matches player wing accent)
-            ctx.fillStyle = '#D84030';
-            ctx.beginPath();
-            ctx.ellipse(-sw * 0.35, 0, 4, 2.8, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = d.colorB;
-            ctx.lineWidth = 0.6;
-            ctx.stroke();
-            // Exhaust glow
-            ctx.fillStyle = '#FFAA22';
-            ctx.beginPath();
-            ctx.ellipse(-sw * 0.35, sh * 0.6, 2.2, 1.5, 0, 0, Math.PI * 2);
-            ctx.fill();
-        } else {
-            // Wing slab extending to the RIGHT (mirror)
-            ctx.fillStyle = d.colorA;
-            ctx.strokeStyle = d.colorB;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.moveTo(0, -4);
-            ctx.lineTo(sw, -sh);
-            ctx.lineTo(sw - 3, sh);
-            ctx.lineTo(0, 5);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = '#D84030';
-            ctx.beginPath();
-            ctx.ellipse(sw * 0.35, 0, 4, 2.8, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = d.colorB;
-            ctx.lineWidth = 0.6;
-            ctx.stroke();
-            ctx.fillStyle = '#FFAA22';
-            ctx.beginPath();
-            ctx.ellipse(sw * 0.35, sh * 0.6, 2.2, 1.5, 0, 0, Math.PI * 2);
-            ctx.fill();
-        }
         ctx.restore();
     }
 }
 
 function createExplosion(x, y, scale) {
     scale = scale || 1.0;
+    spawnBoom(x, y, scale);
     // === PERF: Adaptive particle budget for screen density ===
     // (2026-09) Threshold lowered from 120 → 60 to match drawExplosion's lowered
     // overloaded threshold. Both spawn and render now agree on when to switch to
@@ -2669,9 +2801,6 @@ function playerHit() {
     // === PERF: Ultra-minimal explosion for playable framerate ===
     var px = player.x, py = player.y;
     createExplosion(px, py, 1.2);
-    // (2026-09) Detach wing/body chunks from the player plane so the death
-    // visibly reads as "plane broke apart", not just a smoke puff.
-    createPlayerDebris(px, py);
     // Ultra-minimal extra particles: 2 smoke, 2 fire, 1 spark, 1 shockwave
     for (var i = 0; i < 2; i++) {
         var angle = Math.random() * Math.PI * 2;
@@ -2700,9 +2829,6 @@ function playerHit() {
         var dpx = player.x, dpy = player.y;
         createMassiveExplosion(dpx, dpy, 1.5);
         createExplosion(dpx, dpy, 3.0);
-        // (2026-09) Detach wing/body chunks for the final-death cascade so even
-        // the ultimate game-over explosion leaves a trail of tumbling plane parts.
-        createPlayerDebris(dpx, dpy);
         // Large fireball burst
         for (var fi = 0; fi < 30; fi++) {
             var fAng = Math.random() * Math.PI * 2;
@@ -2831,6 +2957,24 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         updateBossIntro();
     }
 
+    // === (2026-09 FIX A) Decay entry-invulnerability EVERY frame, phase-agnostic. ===
+    // This used to live inside updateBossIntro()'s 'escort' branch, but the final
+    // boss is only pushed AFTER the phase flips to 'spawn' — so the timer never
+    // ticked and the boss stayed permanently invulnerable. It must run outside the
+    // bossIntroPhase guard above.
+    for (let i = 0; i < enemies.length; i++) {
+        const ee = enemies[i];
+        if (!ee) continue;
+        // (FIX C) Decay the white hit-flash overlay — ~5 frames of visible flash.
+        if (ee.hitFlash > 0) ee.hitFlash = Math.max(0, ee.hitFlash - 0.2);
+        if (!ee.entryInvuln || ee.entryInvuln <= 0) continue;
+        ee.entryInvuln--;
+        // FIX C: previously had a y>=100 instant-clear that fired on the first frame
+        // (boss spawns at y=100) and made the 90-frame shield effectively 0 frames.
+        // Player needs the full ~1.5s shield with a visible "SHIELD" ring so they
+        // know their bullets are being deflected — not "the boss is unkillable".
+    }
+
     // === SLOW-MOTION UPDATE: lerp time scale 1.0 → maxScale → 1.0 ===
     if (slowMoTimer > 0) {
         // Determine phase by remaining time. Total = slowMoTimer + (elapsed in this call).
@@ -2931,18 +3075,50 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         }
         spawnBoost--;
     } else {
-        const spawnRate = Math.max(12, 75 - currentStage * 6 - stageWave);
+        // === (2026-09) Tighter spawn cadence ===
+        // Previous: Math.max(12, 75 - currentStage * 6 - stageWave) — too sparse
+        // at wave 1-3 (≈68f / ≈1.1s per spawn).
+        // New formula: keeps the hard floor (12f) but starts at 46f and drops
+        // roughly twice as fast, so stages 1-3 actually feel populated.
+        const spawnRate = Math.max(12, 48 - currentStage * 5 - stageWave * 2);
         if (frameCount % spawnRate === 0) {
-            spawnEnemy();
-            lastSpawnFrame = frameCount;
-            noSpawnCounter = 0;
+            // === (2026-09) DENSITY GUARD ===
+            // If the on-screen mook count drops below 4, fire one EXTRA spawn
+            // this frame on top of the regular cadence so the screen never
+            // empties out. Caps at 30 enemies (existing hard cap).
+            // === (2026-09) FORMATION HOOK-IN ===
+            // Every Nth normal spawn we call spawnFormation() INSTEAD of
+            // spawnEnemy() — group planes descend together and the bonus
+            // triggers if all are killed. Stage 1: every 6th; Stage 2+: every
+            // 4th. spawnFormation() also internally guards against boss phases.
+            formationSpawnCounter++;
+            // Stage 2+: tighter cadence (every 4th). Stage 1: every 6th.
+            const formationEvery = (currentStage >= 2) ? 4 : 6;
+            if (formationSpawnCounter >= formationEvery) {
+                formationSpawnCounter = 0;
+                spawnFormation();
+                lastSpawnFrame = frameCount;
+                noSpawnCounter = 0;
+            } else {
+                spawnEnemy();
+                lastSpawnFrame = frameCount;
+                noSpawnCounter = 0;
+                const liveCount = countMooks();
+                if (liveCount < 4 && enemies.length < 30 && !bossActive) {
+                    spawnEnemy();
+                }
+            }
         }
     }
-    
-    
+
+
     // SAFETY NET: If no enemies for too long, force spawn
     noSpawnCounter++;
-    const maxGap = Math.max(45, 120 - wave * 2); // shorter gap at higher waves
+    // === (2026-09) Shorter safety-net gap ===
+    // Previous: Math.max(45, 120 - wave * 2)
+    // New:     Math.max(40, 90 - wave * 2) — tighter ceiling + lower floor so
+    // the gap shrinks sooner and the screen fills more reliably.
+    const maxGap = Math.max(40, 90 - wave * 2);
     if (noSpawnCounter > maxGap && enemies.length < 30 && !deathActive && gameState === GameState.PLAYING) {
         spawnEnemy();
         lastSpawnFrame = frameCount;
@@ -3087,13 +3263,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
                         if (e.entryInvuln && e.entryInvuln > 0) continue;
                         e.hp -= 3;
+                        e.hitFlash = 1;
                         if (e.hp <= 0) {
                             score += e.score;
+                            tryFormationBonus(e);
                             createHitSpark(e.x, e.y, 0.3);
                             if (e.isWaveBoss) {
                                 spawnPowerup(e.x, e.y, true);
                                 bossActive = false;
-                                if (bossIsFinalBoss) {
+                                if (e.isWaveBoss && e.type === 'final') {
+                                    lastDefeatedBossWasFinal = true; // FIX A(2)
                                     // Final boss destruction: massive explosion effect
                                     bossDeathX = e.x;
                                     bossDeathY = e.y;
@@ -3255,7 +3434,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             star.x = Math.random() * GAME_WIDTH;
         }
     }
-    
+
+    // === (2026-09) FORMATION VOIDING ===
+    // If any member of a formation has escaped off-screen without being killed,
+    // its bonus is voided (-999). Called once per frame so escaping members are
+    // caught quickly.
+    invalidateOffscreenFormations();
+    // === FORMATION BONUS TIMER ===
+    // Decrement the 1-second banner timer (no-op when already 0).
+    if (bonusTimer > 0) bonusTimer--;
+
     // Update laser beams — balanced: range-limited, low active-beam cap, slower ticks
     if (laserBeams.length > 0) {
         // 1) Range-limited target list — enemies must be on-screen and not too far above the player.
@@ -3335,7 +3523,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     if (enemy.entryInvuln && enemy.entryInvuln > 0) {
                         continue;
                     }
-                    // === B-52 STAGE BOSS: wings invulnerable. Skip damage if beam strikes only wings. ===
+                    // === B-52 STAGE BOSS: wings take 50% damage. Body/tail take 100%. ===
+                    let dmgMul = 1;
                     if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
                         const hb = enemy.hitboxBody;
                         const ht = enemy.hitboxTail;
@@ -3344,26 +3533,31 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         const inBody = Math.abs(eRelX - hb.xOff) < hb.halfW && Math.abs(eRelY - hb.yOff) < hb.halfH;
                         const inTail = Math.abs(eRelX - ht.xOff) < ht.halfW && Math.abs(eRelY - ht.yOff) < ht.halfH;
                         if (!inBody && !inTail) {
-                            // Laser hits wing only — no damage, faint wing-edge spark
+                            // (FIX D, option 2) Wing hit: 50% damage, grey metallic spark
+                            dmgMul = 0.5;
                             createHitSpark(beam.targetX, beam.targetY, 0.15);
-                            continue;
                         }
                     }
-                    enemy.hp -= damagePerTick;
+                    enemy.hp -= damagePerTick * dmgMul;
+                    enemy.hitFlash = 1;
                     hitMarkers.push({ x: enemy.x + (Math.random() - 0.5) * 20, y: enemy.y, timer: 12 });
                     
                     if (enemy.hp <= 0 && !enemy.dying) {
                         score += enemy.score;
+                        tryFormationBonus(enemy);
                         comboCount++;
+                        score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
                         if (comboCount > maxCombo) maxCombo = comboCount;
-                        comboTimer = 90;
+                        comboTimer = comboCount >= 10 ? 40 : 50;
+                        maybeShowComboTierText(comboCount);
                         if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
                         createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
                             // Boss defeated - spawn V powerup (one-shot reward)
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
-                            if (bossIsFinalBoss) {
+                            if (enemy.isWaveBoss && enemy.type === 'final') {
+                                lastDefeatedBossWasFinal = true; // FIX A(2)
                                 // Final boss destruction: massive explosion effect
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
@@ -3531,118 +3725,183 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             continue;
         }
 
-        // === SWEEP + ORBIT MOVEMENT (2026-09) ===
-        // Stage 1 (sweep): plane enters from the side and dives toward the player.
-        // Stage 2 (orbit): once inside the playfield, the plane locks onto a circular
-        //   strafing path around the player for a per-type lifetime (scout 2.5s,
-        //   fighter 4s, bomber 5.5s). Each plane picks a unique orbital radius and
-        //   direction so multiple mooks spread around the player instead of stacking.
-        // Stage 3 (exit): when the orbit timer expires, the plane peels off toward
-        //   the top OR bottom edge (random per plane) and flies straight out.
+        // === SWEEP MOVEMENT (2026-09) ===
+        // Enemies spawned from the left or right edge follow a sweep curve:
+        // they fly inward toward the playfield's center, oscillating left/right
+        // around their entry trajectory. After entering the screen (x in [10, GAME_WIDTH-10])
+        // they switch to a gentler sine drift so they feel like bombers pulling
+        // through the combat zone rather than leaving as soon as they enter.
         if (enemy._sweep && enemy._spawnSide) {
             enemy._sweepPhase += 0.06;
-
-            // ===== STAGE 2: ORBIT (active when inside playfield & entry has decayed) =====
-            if (enemy._orbitActive) {
-                enemy._orbitAngle += enemy._orbitAngularSpeed * enemy._orbitDir;
-                // Lock the plane's position onto the orbital circle each frame
-                enemy.x = player.x + Math.cos(enemy._orbitAngle) * enemy._orbitRadius;
-                enemy.y = player.y + Math.sin(enemy._orbitAngle) * enemy._orbitRadius;
-                // Tilt: face along the tangent direction so it visually "circles"
-                const tangentVx = -Math.sin(enemy._orbitAngle) * enemy._orbitDir;
-                enemy.angle = Math.max(-0.7, Math.min(0.7, tangentVx * 1.2));
-                enemy._orbitLifetime--;
-                if (enemy._orbitLifetime <= 0) {
-                    // Exit stage — break orbit and pick an exit direction
-                    enemy._orbitActive = false;
+            // Horizontal velocity toward the screen center (and beyond) while entering
+            const vx = enemy._sweepDir * (enemy.speed * 0.95) + Math.sin(enemy._sweepPhase) * 0.6;
+            enemy.x += vx;
+            enemy.y += enemy.speed * 0.85; // slightly slower vertical for a sweeping arc
+            // Once inside the playfield, dampen the inward velocity so the bomber
+            // doesn't fly straight across and exit in a heartbeat.
+            if (enemy.x > 12 && enemy.x < GAME_WIDTH - 12) {
+                enemy._sweepDir *= 0.96; // ease off the sweep direction
+                // Once the sweep direction has essentially decayed the plane would
+                // otherwise hover mid-screen (only the tiny sine wiggle left).
+                // Retire the sweep so it falls back to normal top-down descent and
+                // reliably exits through the bottom.
+                if (Math.abs(enemy._sweepDir) < 0.08) {
                     enemy._sweep = false;
                     enemy.angle = 0;
-                    // Decide whether to peel UP (-1) or DOWN (+1) — random per plane
-                    enemy._orbitExitDir = (Math.random() < 0.5) ? -1 : 1;
-                    // Give the plane a steady drift vector toward its exit edge.
-                    // Use its current orbital tangent as the horizontal direction
-                    // so the exit doesn't pop sideways.
-                    const tx = -Math.sin(enemy._orbitAngle) * enemy._orbitDir;
-                    enemy._exitVx = tx * enemy.speed * 0.6;
-                    enemy._exitVy = enemy._orbitExitDir * (enemy.speed * 0.5 + 0.4);
-                }
-                // FALL THROUGH — bomber still wants to fire below
-            } else {
-                // ===== STAGE 1: SWEEP ENTRY =====
-                const vx = enemy._sweepDir * (enemy.speed * 0.95) + Math.sin(enemy._sweepPhase) * 0.6;
-                enemy.x += vx;
-                enemy.y += enemy.speed * 0.85;
-
-                // Once inside the playfield, dampen the inward velocity
-                if (enemy.x > 12 && enemy.x < GAME_WIDTH - 12) {
-                    enemy._sweepDir *= 0.96;
-                    if (Math.abs(enemy._sweepDir) < 0.08) {
-                        // ===== Transition into orbit =====
-                        // Pick a stable radius based on plane size + a randomized
-                        // offset so multiple orbiters don't collide at one radius.
-                        const baseRadius = 130 + (enemy.width * 0.6);
-                        enemy._orbitRadius = baseRadius + Math.random() * 60;
-                        // Initial angle = current bearing from player
-                        const dx = enemy.x - player.x;
-                        const dy = enemy.y - player.y;
-                        enemy._orbitAngle = Math.atan2(dy, dx);
-                        // Random direction + small speed jitter so the swarm looks
-                        // organic instead of perfectly synchronized
-                        enemy._orbitDir = (Math.random() < 0.5) ? 1 : -1;
-                        enemy._orbitAngularSpeed = enemy._orbitAngularSpeed || 0.04;
-                        enemy._orbitAngularSpeed *= (0.85 + Math.random() * 0.3);
-                        enemy._orbitLifetime = enemy._orbitMaxLifetime || 240;
-                        enemy._orbitActive = true;
-                        enemy.angle = 0;
-                    } else {
-                        // Mid-decay: keep banking for visual feedback
-                        enemy.angle = vx * 0.05;
-                    }
-                } else {
-                    // Still in transit from the spawn edge — bank in entry direction
-                    enemy.angle = vx * 0.05;
                 }
             }
+            // Optional tilt for visual feedback — angle scales with vx so the plane
+            // visibly banks as it sweeps.
+            enemy.angle = vx * 0.05;
+            // FALL-THROUGH into the type-specific case below for any extra per-type
+            // behavior (shooting, weaving, etc).
         }
 
-        // ===== STAGE 3: EXIT DRIFT (after orbit ends, before reaching the edge) =====
-        // If the plane has finished orbiting, just keep applying the exit vector
-        // until it leaves the screen. The cleanup at the bottom of the loop will
-        // splice it off once it crosses an edge.
-        if (!enemy._sweep && enemy._exitVx !== undefined && enemy._exitVy !== undefined) {
-            enemy.x += enemy._exitVx;
-            enemy.y += enemy._exitVy;
-            enemy.angle = Math.max(-0.5, Math.min(0.5, enemy._exitVx * 0.08));
+        // === (v16) COLUMN FORMATION PATH =================================
+        // Replaces the default scout movement for enemies flagged with
+        // `_pathMode === 'column'`. Runs the 3-phase trajectory: straight
+        // descent → orbit around (cx, GAME_HEIGHT*0.42) → cross-screen exit.
+        // Enemies kept moving in this branch fire a player-aimed bullet
+        // every 1.2s (72 frames). All velocity maths assume the shared
+        // speed ENEMY_BASE_SPEED * 1.1 so the column stays tight.
+        if (enemy._pathMode === 'column') {
+            const COL_SPEED = ENEMY_BASE_SPEED * 1.1; // shared speed
+            const COL_RADIUS = 90;
+            const COL_CENTER_Y = GAME_HEIGHT * 0.42;
+            // Tangential speed on the orbit should match COL_SPEED → angular
+            // speed = v / r = COL_SPEED / COL_RADIUS (radians/frame).
+            const COL_ANG_SPEED = COL_SPEED / COL_RADIUS;
+            const MAX_ANGLE_STEP = 0.12; // (v17) cap per-frame rotation
+            const prevX = enemy.x;
+            const prevY = enemy.y;
+            let vx = 0, vy = 0;
+            if (enemy._pathPhase === 0) {
+                // PHASE 0: straight down until we reach the orbit center y.
+                vy = COL_SPEED;
+                enemy.y += vy;
+                if (enemy.y >= COL_CENTER_Y) {
+                    // (v17) Orbit starts AT the current position — no snap.
+                    // Center is 90px to the side of the entry (opposite to
+                    // the cross-screen exit). The start angle is computed
+                    // from the current (x, y) relative to that center.
+                    enemy._pathCenterX = enemy.x + enemy._pathDir * COL_RADIUS;
+                    enemy._pathCenterY = enemy.y;
+                    enemy._pathAngle = Math.atan2(
+                        enemy.y - enemy._pathCenterY,
+                        enemy.x - enemy._pathCenterX
+                    );
+                    enemy._pathPhase = 1;
+                    enemy._pathAngleAccum = 0; // (v17) track full revolutions
+                }
+            } else if (enemy._pathPhase === 1) {
+                // (v17) Angular speed sign: -_pathDir so the tangent at the
+                // start angle points downward (continues the descent).
+                //   _pathDir = +1 → angle DECREASES
+                //   _pathDir = -1 → angle INCREASES
+                const dTheta = -enemy._pathDir * COL_ANG_SPEED;
+                enemy._pathAngle += dTheta;
+                enemy._pathAngleAccum += Math.abs(dTheta);
+                const nx = enemy._pathCenterX + Math.cos(enemy._pathAngle) * COL_RADIUS;
+                const ny = enemy._pathCenterY + Math.sin(enemy._pathAngle) * COL_RADIUS;
+                vx = nx - enemy.x;
+                vy = ny - enemy.y;
+                enemy.x = nx;
+                enemy.y = ny;
+                // After one full revolution (2π accumulated), transition to exit.
+                if (enemy._pathAngleAccum >= Math.PI * 2) {
+                    enemy._pathPhase = 2;
+                    // (v17) Lock exit tangent velocity (vx, vy already hold it)
+                    enemy._pathExitVx = vx;
+                    enemy._pathExitVy = vy;
+                    enemy._pathExitY = enemy.y;
+                    // Exit target: opposite side off-screen.
+                    enemy._pathExitTargetX = (enemy._pathDir < 0)
+                        ? (GAME_WIDTH + 80)
+                        : (-80);
+                }
+            } else {
+                // (v17) PHASE 2: cross-screen horizontal exit with tangent
+                // continuity. Start with the tangent velocity (vx, vy) at
+                // the exit point, then dampen vy and accelerate vx toward
+                // the exit direction (smoothly transitions to horizontal).
+                if (enemy._pathExitVx === undefined) {
+                    enemy._pathExitVx = (enemy._pathDir < 0) ? COL_SPEED : -COL_SPEED;
+                    enemy._pathExitVy = 0;
+                }
+                // Dampen vertical velocity toward 0 (multiplicative per frame).
+                enemy._pathExitVy *= 0.92;
+                // Accelerate horizontal velocity toward the exit direction.
+                const exitVxMax = (enemy._pathDir < 0) ? COL_SPEED * 1.3 : -COL_SPEED * 1.3;
+                if (enemy._pathDir < 0) {
+                    enemy._pathExitVx = Math.min(exitVxMax, enemy._pathExitVx + 0.18);
+                } else {
+                    enemy._pathExitVx = Math.max(exitVxMax, enemy._pathExitVx - 0.18);
+                }
+                vx = enemy._pathExitVx;
+                vy = enemy._pathExitVy;
+                enemy.x += vx;
+                enemy.y += vy;
+            }
+            // (v17) Banking angle: compute from actual displacement vector
+            // (post-physics), then clamp per-frame rotation to 0.12 rad with
+            // shortest-path wrap. No instant flips.
+            if (vx !== 0 || vy !== 0) {
+                const targetAngle = Math.atan2(vx, -vy);
+                let cur = (enemy.angle === undefined) ? targetAngle : enemy.angle;
+                // Wrap delta into [-π, π].
+                let delta = targetAngle - cur;
+                while (delta > Math.PI) delta -= Math.PI * 2;
+                while (delta < -Math.PI) delta += Math.PI * 2;
+                // Clamp step magnitude.
+                if (delta > MAX_ANGLE_STEP) delta = MAX_ANGLE_STEP;
+                else if (delta < -MAX_ANGLE_STEP) delta = -MAX_ANGLE_STEP;
+                enemy.angle = cur + delta;
+            }
+            // Shooting: every 72 frames (1.2s) fire one aimed bullet.
+            enemy._pathShootTimer++;
+            if (enemy._pathShootTimer >= 72) {
+                enemy._pathShootTimer = 0;
+                const pdx = player.x - enemy.x;
+                const pdy = player.y - enemy.y;
+                const pd = Math.sqrt(pdx * pdx + pdy * pdy) + 0.0001;
+                const bSpeed = 1.2;
+                enemyBullets.push({
+                    x: enemy.x,
+                    y: enemy.y + enemy.height / 2,
+                    width: 24,
+                    height: 24,
+                    speed: bSpeed,
+                    vx: (pdx / pd) * bSpeed,
+                    vy: (pdy / pd) * bSpeed
+                });
+            }
+            // Skip the per-type switch for column enemies — we did all the
+            // work above and don't want the default scout branch to add
+            // a plain `y += speed` on top.
+            continue;
         }
 
         switch (enemy.type) {
             case 'scout':
-                // Orbit + sweep movement lives in the SWEEP/ORBIT block above.
-                // Freefall only when no sweep / orbit / exit is active.
-                if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx === undefined) {
+                if (!enemy._sweep) {
                     enemy.y += enemy.speed;
                 }
                 break;
             case 'fighter':
-                // Orbit + sweep entries are driven by the SWEEP/ORBIT block above.
-                // Only apply freefall + sine wiggle when the plane is in plain
-                // top-down mode (no sweep / no orbit).
-                if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx === undefined) {
+                if (!enemy._sweep) {
                     enemy.y += enemy.speed;
                     enemy.x += Math.sin(enemy.phase) * 2;
-                } else if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx !== undefined) {
-                    // Post-orbit exit drift is handled by the exit block above
+                } else {
+                    // While sweeping, add a small extra sine wiggle so the fighter
+                    // visibly banks while flying in.
+                    enemy.x += Math.sin(enemy.phase) * 1.2;
                 }
                 break;
             case 'bomber':
-                // Orbit + sweep movement lives in the SWEEP/ORBIT block above.
-                // Freefall only when no sweep / orbit / exit is active.
-                if (!enemy._sweep && !enemy._orbitActive && enemy._exitVx === undefined) {
+                if (!enemy._sweep) {
                     enemy.y += enemy.speed;
                 }
-                // Bomber shoots while actively in combat (top-down, orbiting, or sweeping).
-                // Distance from player is the trigger so it still fires during orbit.
-                if (enemy.y > 50 && enemy.y < GAME_HEIGHT - 50) {
+                if (enemy.y > 100 && enemy.y < GAME_HEIGHT - 100) {
                     enemy.shootCooldown--;
                     if (enemy.shootCooldown <= 0) {
                         enemyBullets.push({
@@ -3650,7 +3909,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                             y: enemy.y + enemy.height / 2,
                             width: 28,
                             height: 28,
-                            speed: 1.28
+                            speed: 1.28 // +60% from 0.8 (was 0.5)
                         });
                         enemy.shootCooldown = 160;
                     }
@@ -3821,10 +4080,13 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         const minCascadeFrames = 90;  // ~1.5s guaranteed cascade
                         const offLeft = enemy.x < -120;
                         const offRight = enemy.x > GAME_WIDTH + 120;
-                        const offBottom =
+                        const offBottom = enemy.y > GAME_HEIGHT + 80;
+                        // (FIX E) Apply the minimum-cascade guard to ALL exit directions,
+                        // not just offBottom — a boss dying near the left/right edge used
+                        // to skip the whole sequence.
+                        enemy._dyingOffScreen =
                             enemy.dyingTimer > minCascadeFrames &&
-                            enemy.y > GAME_HEIGHT + 80;
-                        enemy._dyingOffScreen = offLeft || offRight || offBottom;
+                            (offLeft || offRight || offBottom);
                         // Hard cap so it doesn't loop forever
                         if (enemy.dyingTimer > 360) enemy._dyingOffScreen = true;
 
@@ -4234,8 +4496,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 enemyBullets.push({
                     x: missileX,
                     y: missileY,
-                    width: 36,
-                    height: 36,
+                    width: 22,   // was 36 — mid-boss missiles were oversized (2026-09 request)
+                    height: 22,
                     speed: mSpeed,
                     vx: (dx / dist) * mSpeed,
                     vy: (dy / dist) * mSpeed,
@@ -4282,7 +4544,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         if (offBottom || offLeft || offRight) {
             if (enemy.isWaveBoss) {
                 bossActive = false;
-                if (bossIsFinalBoss) {
+                if (enemy.isWaveBoss && enemy.type === 'final') {
+                    lastDefeatedBossWasFinal = true; // FIX A(2) — boss off-screen treated as killed
                     bossDeathX = enemy.x;
                     bossDeathY = enemy.y;
                     createHitSpark(enemy.x, enemy.y, 0.6);
@@ -4338,8 +4601,6 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
 
     // === MOOK DESTRUCTION: advance small detached wing/body chunks from regular enemy kills ===
     updateEnemyDebris();
-    // === PLAYER DESTRUCTION: advance the player's detached wing/body chunks ===
-    updatePlayerDebris();
 
     // Update powerups
     // Converted from forEach to for (reverse for safe splice)
@@ -4499,13 +4760,17 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             // === DYING GUARD: skip enemies already in dying-fall / death-cascade ===
             if (enemy.dying) continue;
             // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
-            if (enemy.entryInvuln && enemy.entryInvuln > 0) {
-                createHitSpark(bullet.x, bullet.y, 0.1);
-                bullet._hit = true;
-                break;
-            }
+            // (FIX B) Moved INSIDE checkCollision: previously drone bullets died on
+            // spawn even when nowhere near the boss.
             if (checkCollision(bullet, enemy)) {
-                // === B-52 STAGE BOSS: wings invulnerable. ===
+                if (enemy.entryInvuln && enemy.entryInvuln > 0) {
+                    createHitSpark(bullet.x, bullet.y, 0.15);
+                    bullet._hit = true;
+                    droneBullets.splice(bi, 1);
+                    break;
+                }
+                // === B-52 STAGE BOSS: wings take 50% damage. ===
+                let dmgMul = 1;
                 if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
                     const hb = enemy.hitboxBody;
                     const ht = enemy.hitboxTail;
@@ -4514,21 +4779,25 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     const inBody = Math.abs(dRelX - hb.xOff) < hb.halfW && Math.abs(dRelY - hb.yOff) < hb.halfH;
                     const inTail = Math.abs(dRelX - ht.xOff) < ht.halfW && Math.abs(dRelY - ht.yOff) < ht.halfH;
                     if (!inBody && !inTail) {
+                        // (FIX D, option 2) Wing hit: 50% damage, grey metallic spark
+                        dmgMul = 0.5;
                         createHitSpark(bullet.x, bullet.y, 0.15);
-                        bullet._hit = true;
-                        droneBullets.splice(bi, 1);
-                        break;
                     }
                 }
-                const dmg = (bullet.damage || 1) * (player.vPowerActive ? 1.5 : 1);
+                const dmg = (bullet.damage || 1) * (player.vPowerActive ? 1.5 : 1) * dmgMul;
                 enemy.hp -= dmg;
+                enemy.hitFlash = 1;
                 bullet._hit = true;
                 droneBullets.splice(bi, 1);
+
                 
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
+                    tryFormationBonus(enemy);
                     comboCount++;
-                    comboTimer = 90; // 1.5 seconds to chain kills
+                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
+                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16) shorter window; tighter at high combos
+                    maybeShowComboTierText(comboCount);
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
                     // Mid-boss: trigger falling sequence instead of immediate splice (one-shot)
                     if (enemy.isMidBoss && enemy.type === 'heavyBomber' && !enemy.dying) {
@@ -4545,7 +4814,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         // One-shot reward: only runs the FIRST time this boss is killed
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
-                        if (bossIsFinalBoss) {
+                        if (enemy.isWaveBoss && enemy.type === 'final') {
+                            lastDefeatedBossWasFinal = true; // FIX A(2)
                             // === MULTI-STEP CASCADE: small chained pops before big final + slow-mo ===
                             enemy.dying = true;
                             enemy.dyingTimer = 0;
@@ -4649,17 +4919,22 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 // Check if enemy is in the vertical beam path
                 if (Math.abs(enemy.x - beamX) < enemy.width / 2 + 12 && enemy.y < player.y) {
                     enemy.hp -= 46.08; // 3x missile damage
+                    enemy.hitFlash = 1;
                     if (enemy.hp <= 0 && !enemy.dying) {
                         score += enemy.score;
+                        tryFormationBonus(enemy);
                         comboCount++;
-                        comboTimer = 90;
+                        score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
+                        comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
+                        maybeShowComboTierText(comboCount);
                         if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
                         createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
                             // One-shot reward
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
-                            if (bossIsFinalBoss) {
+                            if (enemy.isWaveBoss && enemy.type === 'final') {
+                                lastDefeatedBossWasFinal = true; // FIX A(2)
                                 // Final boss destruction: massive explosion effect
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
@@ -4809,13 +5084,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 const d = Math.hypot(mUltimateMissile.x - enemy.x, mUltimateMissile.y - enemy.y);
                 if (d < 200) {
                     enemy.hp -= 46.08; // 3x normal missile damage (15.36 * 3)
+                    enemy.hitFlash = 1;
                     if (enemy.hp <= 0) {
                         score += enemy.score;
+                        tryFormationBonus(enemy);
                         createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
                             spawnPowerup(enemy.x, enemy.y, true);
                             bossActive = false;
-                            if (bossIsFinalBoss) {
+                            if (enemy.isWaveBoss && enemy.type === 'final') {
+                                lastDefeatedBossWasFinal = true; // FIX A(2)
                                 // Final boss destruction: massive explosion effect
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
@@ -4951,13 +5229,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             // === DYING GUARD: skip enemies in dying-fall / death-cascade ===
             if (enemy.dying) continue;
             // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
-            if (enemy.entryInvuln && enemy.entryInvuln > 0) {
-                createHitSpark(m.x, m.y, 0.1);
-                hitEnemy = true;
-                break;
-            }
+            // (FIX B) Moved INSIDE checkCollision: previously missiles fizzled on
+            // launch even when nowhere near the boss.
             if (checkCollision(missileHitbox, enemy)) {
-                // === B-52 STAGE BOSS: wings are invulnerable. Only body/tail take damage. ===
+                if (enemy.entryInvuln && enemy.entryInvuln > 0) {
+                    createHitSpark(m.x, m.y, 0.15);
+                    hitEnemy = true;
+                    break;
+                }
+                // === B-52 STAGE BOSS: wings take 50% damage. Body/tail take 100%. ===
+                let dmgMul = 1;
                 if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
                     const hb = enemy.hitboxBody;
                     const ht = enemy.hitboxTail;
@@ -4966,17 +5247,18 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     const inBody = Math.abs(mRelX - hb.xOff) < hb.halfW && Math.abs(mRelY - hb.yOff) < hb.halfH;
                     const inTail = Math.abs(mRelX - ht.xOff) < ht.halfW && Math.abs(mRelY - ht.yOff) < ht.halfH;
                     if (!inBody && !inTail) {
-                        // Wing hit: missile fizzles without damage (still consumes missile)
+                        // (FIX D, option 2) Wing hit: 50% damage, grey metallic spark
+                        dmgMul = 0.5;
                         createHitSpark(m.x, m.y, 0.2);
-                        hitEnemy = true;
-                        break;
                     }
                 }
                 // Direct hit: 12.8 damage (same power applied to ALL enemy types)
-                const missileDamage = 15.36; // 40% power reduction from 25.6
+                const missileDamage = 15.36 * dmgMul; // 40% power reduction from 25.6
                 enemy.hp -= missileDamage;
+                enemy.hitFlash = 1;
                 createExplosion(m.x, m.y, 1.0);
                 createHitSpark(enemy.x, enemy.y);
+
                 
                 // Splash damage to ALL nearby enemies (reverse iteration for safety)
                 // Skip dying enemies — their kill reward already triggered
@@ -4987,14 +5269,18 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     const d2 = Math.hypot(m.x - e2.x, m.y - e2.y);
                     if (d2 < 140) { // wider splash radius
                         e2.hp -= missileDamage * 0.5;
+                        e2.hitFlash = 1;
                     }
                 }
                 
                 // Proper enemy cleanup when killed by missile (score + powerup + removal)
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
+                    tryFormationBonus(enemy);
                     comboCount++;
-                    comboTimer = 90;
+                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
+                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
+                    maybeShowComboTierText(comboCount);
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
                     // === IMPACT (2026-09): bumped 0.7 → 1.0 so a missile kill visually
                     // matches the player-bullet branch (both now feed createEnemyDebris).
@@ -5003,7 +5289,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         // One-shot reward for boss kill
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
-                        if (bossIsFinalBoss) {
+                        if (enemy.isWaveBoss && enemy.type === 'final') {
+                            lastDefeatedBossWasFinal = true; // FIX A(2)
                             bossDeathX = enemy.x;
                             bossDeathY = enemy.y;
                             createHitSpark(enemy.x, enemy.y, 0.6);
@@ -5063,12 +5350,18 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             // === DYING GUARD: enemies already in dying-fall / death-cascade are ignored entirely ===
             if (enemy.dying) continue;
             // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
-            if (enemy.entryInvuln && enemy.entryInvuln > 0) {
-                createHitSpark(bullet.x, bullet.y, 0.1);
-                continue;
-            }
+            // (FIX B) Moved INSIDE checkCollision below: previously every bullet on
+            // screen sparked every frame regardless of proximity to the boss.
             if (checkCollision(bullet, enemy)) {
-                // === B-52 STAGE BOSS: wings are invulnerable. Only body/tail take damage. ===
+                // Entry invulnerability: only bullets that ACTUALLY hit the boss are
+                // consumed, with a grey/white ricochet spark and no damage.
+                if (enemy.entryInvuln && enemy.entryInvuln > 0) {
+                    createHitSpark(bullet.x, bullet.y, 0.15);
+                    playerBullets.splice(bi, 1);
+                    break;
+                }
+                // === B-52 STAGE BOSS: wings take 50% damage. Body/tail take 100%. ===
+                let dmgMul = 1;
                 if (enemy.isWaveBoss && enemy.type === 'final' && enemy.hitboxBody) {
                     const hb = enemy.hitboxBody;
                     const ht = enemy.hitboxTail;
@@ -5078,20 +5371,25 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     const inBody = Math.abs(bRelX - hb.xOff) < hb.halfW && Math.abs(bRelY - hb.yOff) < hb.halfH;
                     const inTail = Math.abs(bRelX - ht.xOff) < ht.halfW && Math.abs(bRelY - ht.yOff) < ht.halfH;
                     if (!inBody && !inTail) {
-                        // Wing hit: bullet passes through, tiny spark on wing edge, NO damage
+                        // (FIX D, option 2) Wing hit: 50% damage, grey metallic spark
+                        dmgMul = 0.5;
                         createHitSpark(bullet.x, bullet.y, 0.15);
-                        continue; // skip damage, bullet keeps flying
                     }
                 }
-                const bulletDmg = bullet.power || (player.vPowerActive ? 1.5 : 1);
+                const bulletDmg = (bullet.power || (player.vPowerActive ? 1.5 : 1)) * dmgMul;
                 enemy.hp -= bulletDmg;
+                enemy.hitFlash = 1;
                 createHitSpark(enemy.x + (Math.random() - 0.5) * enemy.width * 0.5, enemy.y + (Math.random() - 0.5) * enemy.height * 0.5);
                 playerBullets.splice(bi, 1);
 
+
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
+                    tryFormationBonus(enemy);
                     comboCount++;
-                    comboTimer = 90;
+                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
+                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
+                    maybeShowComboTierText(comboCount);
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
                     createExplosion(enemy.x, enemy.y, 0.7);
                     // Mid-boss falling sequence (heavyBomber) — guard prevents second kill from short-circuiting
@@ -5108,7 +5406,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     if (enemy.isWaveBoss && !enemy.dying) {
                         spawnPowerup(enemy.x, enemy.y, true);
                         bossActive = false;
-                        if (bossIsFinalBoss) {
+                        if (enemy.isWaveBoss && enemy.type === 'final') {
+                            lastDefeatedBossWasFinal = true; // FIX A(2)
                             enemy.dying = true;
                             enemy.dyingTimer = 0;
                             enemy.dyingCascade = 0;
@@ -5135,6 +5434,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     hitMarkers.push({ x: enemy.x + (Math.random() - 0.5) * 20, y: enemy.y, timer: 12 });
                     createHitSpark(enemy.x, enemy.y, 0.5);
                 }
+                // Bullet was consumed by this hit — stop scanning further enemies.
+                break;
             }
         }
     }
@@ -5144,7 +5445,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         // Converted from forEach to for (reverse for safe splice)
         for (let bi = enemyBullets.length - 1; bi >= 0; bi--) {
             const bullet = enemyBullets[bi];
-            if (checkCollision(bullet, player)) {
+            if (checkPlayerHit(bullet)) {
                 enemyBullets.splice(bi, 1);
             if (player.shieldActive && !player.vPowerActive) {
                     // Shield absorbs the hit
@@ -5166,7 +5467,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             const enemy = enemies[ei];
             // === DYING GUARD: dying enemies (mid-boss fall / final-boss cascade) cannot damage player ===
             if (enemy.dying) continue;
-            if (checkCollision(enemy, player)) {
+            if (checkPlayerHit(enemy)) {
                 // Ram collision: deals 1 damage (same as a single player bullet).
                 // - Mook (hp=1) → dies, normal splice, drop powerup, etc.
                 // - heavyBomber / final-boss (high hp) → takes 1 chip damage, stays alive,
@@ -5174,12 +5475,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 //   fires iff ram happened to bring hp to 0 (treated identically to a
                 //   weapon-collision kill — same dying flag, same bossDefeated timing).
                 enemy.hp -= 1;
+                enemy.hitFlash = 1;
                 createExplosion(enemy.x, enemy.y, 0.3);
                 let ramKilled = false;
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
+                    tryFormationBonus(enemy);
                     comboCount++;
-                    comboTimer = 90; // 1.5 seconds to chain kills
+                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
+                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
+                    maybeShowComboTierText(comboCount);
                     if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
                     if (enemy.isMidBoss && enemy.type === 'heavyBomber') {
                         enemy.dying = true;
@@ -5192,7 +5497,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         ramKilled = true;
                     } else if (enemy.isWaveBoss) {
                         bossActive = false;
-                        if (bossIsFinalBoss) {
+                        if (enemy.isWaveBoss && enemy.type === 'final') {
+                            lastDefeatedBossWasFinal = true; // FIX A(2)
                             createExplosion(enemy.x, enemy.y, 0.6);
                             deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
                             screenShake = 10; screenShakeIntensity = 3;
@@ -5259,6 +5565,19 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     playerMissileLevel = 0;
                     break;
                 case 'powerW':
+                    // (v17) Stage-4+ only — defense in depth: if a powerW somehow
+                    // arrives on stage < 4, downgrade to a free P level instead.
+                    if (currentStage < 4) {
+                        player.powerLevel = Math.min(6, player.powerLevel + 1);
+                        player.activeWeapon = 'P';
+                        laserBeams = [];
+                        stopLaserSound();
+                        laserLevel = 0;
+                        missiles = [];
+                        playerMissileLevel = 0;
+                        sparkleFlashActive = true; sparkleFlashTimer = 30;
+                        break;
+                    }
                     // White W - Laser weapon (up to 7 beams, level 0-6)
                     // Degrade current weapon by 1 level on death
                     if (player.activeWeapon === 'P') {
@@ -5397,6 +5716,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
 // ============================================
 
 function drawLaserBeam() {
+    if (SPR.ready) { drawLaserBeamSprite(); /* fall through to legacy for actual beam */ }
     for (let i = 0; i < laserBeams.length; i++) {
         const lb = laserBeams[i];
         if (!lb) continue;
@@ -5477,6 +5797,7 @@ function drawLaserBeam() {
 // Growing massive explosion - scale 0.15..1.0 (small->huge), used during boss death countdown
 function createGrowingMassiveExplosion(x, y, scale) {
     scale = Math.max(0.15, scale || 1.0);
+    spawnBoom(x, y, scale * 1.5);
     const fireCount = Math.floor(8 * scale);
     const smokeCount = Math.floor(5 * scale);
     const sparkCount = Math.floor(3 * scale);
@@ -5565,6 +5886,7 @@ function createHitSpark(x, y, scale) {
 
 // // Massive explosion for final boss destruction (like player death but bigger)
 function createMassiveExplosion(x, y, scale) {
+    spawnBoom(x, y, (scale || 1.0) * 1.8);
     // === PERF: DRASTIC 90% reduction from original 193 particles
     if (explosions.length >= MAX_PARTICLES) return;
     scale = scale || 1.0;
@@ -5594,6 +5916,22 @@ function createMassiveExplosion(x, y, scale) {
 
 function onBossDefeated() {
     if (bossDefeated) {
+        // FIX A(4): Phase C (~line 3598) already triggered hyperspace + state reset on
+        // the dying-boss entity itself. If we run this legacy block on the same frame,
+        // score +10000 and explosions double up. Guard against the Phase-C path.
+        // Phase C sets `hyperspaceActive=true`; legacy path also sets it, but Phase C
+        // sets it BEFORE bossDefeated=true is read here (it's already true via the
+        // kill site), so the cleanest discriminator is the `_dyingFinalDone` flag
+        // combined with `lastDefeatedBossWasFinal` (which kill sites set) — if the
+        // dying-boss entity is already gone (spliced by Phase C) but lastDefeatedBossWasFinal
+        // was set, Phase C was the path; just clean the legacy gate and skip.
+        if (lastDefeatedBossWasFinal && !enemies.some(e => e && e.isWaveBoss && e.type === 'final')) {
+            bossDefeated = false;
+            bossActive = false;
+            bossSpawned = false;
+            lastDefeatedBossWasFinal = false;
+            return;
+        }
         // Final boss death effect: same as player death (3-layer explosion, no slow timer)
         // (Player death = 50+40+15=105 particles; do 60+40+15=115 for slightly bigger boss death)
         const dx = bossDeathX;
@@ -5637,11 +5975,11 @@ function onBossDefeated() {
         // White flash
         deathFlashAlpha = Math.max(deathFlashAlpha, 0.4);
         // Score and effects
-        score += bossIsFinalBoss ? 10000 : 5000;
+        score += lastDefeatedBossWasFinal ? 10000 : 5000;
         comboCount += 5;
         comboTimer = 180;
         // IMMEDIATELY start hyperspace (no 5-minute freeze)
-        if (bossIsFinalBoss) {
+        if (lastDefeatedBossWasFinal) {
             // Clear all remaining enemies and bullets for clean stage transition
             const remainingEnemies = enemies.filter(e => !e.isWaveBoss);
             for (let rc = 0; rc < remainingEnemies.length; rc++) {
@@ -5658,6 +5996,7 @@ function onBossDefeated() {
             hyperspacePhase = 0;
         }
         // Reset state
+        lastDefeatedBossWasFinal = false; // consumed
         bossDefeated = false;
         bossActive = false;
         bossSpawned = false;
@@ -6042,7 +6381,586 @@ function drawMainPlanet() {
     }
 }
 
+// ============================================================================
+// === SPRITE VISUAL LAYER (2026-09 visual redesign) ===========================
+// Everything in this block is DRAW-ONLY. Gameplay state, hitboxes, spawn logic
+// and scoring are untouched; every entry point checks SPR.ready and falls back
+// to the legacy vector drawing when the sprite set is not loaded.
+// ============================================================================
+const VIS = {
+    horizon: 566,
+    clouds: [],
+    waves: [],
+    booms: [],
+    lastPlayerX: null,
+    bank: 0,
+    stamps: {},
+    grads: {},
+    inited: false
+};
+
+function visInit() {
+    if (VIS.inited) return;
+    VIS.inited = true;
+    // --- cloud stamps: cumulus built from circles, pre-rendered once per tone ---
+    const makeStamp = (lit, base, edge) => {
+        const c = document.createElement('canvas');
+        c.width = 280; c.height = 140;
+        const g = c.getContext('2d');
+        g.translate(140, 84);
+        g.fillStyle = edge;
+        g.beginPath(); g.ellipse(0, 10, 58, 12, 0, 0, Math.PI * 2); g.fill();
+        const shade = [[-38, 4, 16], [-16, -8, 22], [10, -12, 24], [34, -2, 18], [48, 8, 12]];
+        g.fillStyle = base;
+        for (const [x, y, r] of shade) { g.beginPath(); g.arc(x, y + 5, r, 0, Math.PI * 2); g.fill(); }
+        const top = [[-38, 0, 14], [-16, -12, 20], [10, -16, 22], [34, -6, 16], [48, 4, 10]];
+        g.fillStyle = lit;
+        for (const [x, y, r] of top) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
+        g.beginPath(); g.ellipse(0, 8, 52, 9, 0, 0, Math.PI * 2); g.fill();
+        return c;
+    };
+    VIS.stamps.near = makeStamp('#F4F9FF', '#C9DDF1', '#A9C5E3');
+    VIS.stamps.far = makeStamp('#DCE9F7', '#C1D5EC', '#B4CBE6');
+    // --- cloud field: 3 parallax layers ---
+    const layers = [
+        { n: 3, speed: 0.4, s: [0.7, 0.9], a: 0.5, tone: 'far' },
+        { n: 3, speed: 0.9, s: [0.95, 1.1], a: 0.82, tone: 'near' },
+        { n: 3, speed: 1.6, s: [1.2, 1.45], a: 0.95, tone: 'near' }
+    ];
+    VIS.clouds = [];
+    for (const L of layers) {
+        for (let i = 0; i < L.n; i++) {
+            VIS.clouds.push({
+                x: Math.random() * GAME_WIDTH,
+                y: Math.random() * (VIS.horizon + 100) - 60,
+                s: L.s[0] + Math.random() * (L.s[1] - L.s[0]),
+                speed: L.speed, a: L.a, tone: L.tone
+            });
+        }
+    }
+    // --- wave highlights on the sea ---
+    VIS.waves = [];
+    for (let i = 0; i < 70; i++) {
+        VIS.waves.push({
+            x: Math.random() * GAME_WIDTH,
+            y: VIS.horizon + Math.random() * (GAME_HEIGHT - VIS.horizon),
+            w: 14 + Math.random() * 32
+        });
+    }
+    // --- cached gradients ---
+    const sky = ctx.createLinearGradient(0, 0, 0, VIS.horizon);
+    sky.addColorStop(0, '#143C78'); sky.addColorStop(0.45, '#3B7DC1');
+    sky.addColorStop(0.8, '#8CC0E5'); sky.addColorStop(1, '#F0D2A2');
+    VIS.grads.sky = sky;
+    const sea = ctx.createLinearGradient(0, VIS.horizon, 0, GAME_HEIGHT);
+    sea.addColorStop(0, '#2C6EA8'); sea.addColorStop(0.25, '#1A4F8A'); sea.addColorStop(1, '#0B2648');
+    VIS.grads.sea = sea;
+    const sun = ctx.createRadialGradient(392, VIS.horizon, 0, 392, VIS.horizon, 150);
+    sun.addColorStop(0, 'rgba(255,240,184,0.8)'); sun.addColorStop(0.45, 'rgba(255,217,138,0.3)'); sun.addColorStop(1, 'rgba(255,217,138,0)');
+    VIS.grads.sun = sun;
+    const refl = ctx.createRadialGradient(392, VIS.horizon + 30, 0, 392, VIS.horizon + 30, 70);
+    refl.addColorStop(0, 'rgba(255,233,168,0.22)'); refl.addColorStop(1, 'rgba(255,233,168,0)');
+    VIS.grads.refl = refl;
+    const aura = ctx.createRadialGradient(0, 0, 0, 0, 0, 200);
+    aura.addColorStop(0, 'rgba(255,80,60,0.22)'); aura.addColorStop(0.6, 'rgba(255,60,30,0.08)'); aura.addColorStop(1, 'rgba(255,40,20,0)');
+    VIS.grads.aura = aura;
+}
+
+function visTimeScale() { return (typeof timeScale === 'number' && timeScale > 0) ? timeScale : 1; }
+
+// ---------------------------------------------------------------- background
+function drawBackgroundSprite() {
+    visInit();
+    const H = VIS.horizon;
+    ctx.fillStyle = VIS.grads.sky;
+    ctx.fillRect(0, 0, GAME_WIDTH, H);
+    // sun glow (squashed ellipse)
+    ctx.save();
+    ctx.translate(0, H); ctx.scale(1, 0.75); ctx.translate(0, -H);
+    ctx.fillStyle = VIS.grads.sun;
+    ctx.fillRect(240, H - 150, 304, 150);
+    ctx.restore();
+    // sea
+    ctx.fillStyle = VIS.grads.sea;
+    ctx.fillRect(0, H, GAME_WIDTH, GAME_HEIGHT - H);
+    ctx.fillStyle = 'rgba(255,243,208,0.55)';
+    ctx.fillRect(0, H - 1, GAME_WIDTH, 3);
+    ctx.fillStyle = VIS.grads.refl;
+    ctx.fillRect(322, H, 140, 100);
+    // waves (scroll down slowly)
+    const ts = visTimeScale();
+    ctx.fillStyle = '#FFFFFF';
+    for (const w of VIS.waves) {
+        w.y += 0.6 * ts;
+        if (w.y > GAME_HEIGHT + 2) { w.y = H + 2; w.x = Math.random() * GAME_WIDTH; }
+        const depth = (w.y - H) / (GAME_HEIGHT - H);
+        ctx.globalAlpha = 0.10 + depth * 0.15;
+        ctx.fillRect(w.x, w.y, w.w, 1.5);
+    }
+    ctx.globalAlpha = 1;
+    // clouds (far → near). Each sits BELOW planes; nearest layer is still under entities.
+    for (const c of VIS.clouds) {
+        c.y += c.speed * ts;
+        if (c.y - 80 * c.s > GAME_HEIGHT) {
+            c.y = -90 * c.s;
+            c.x = Math.random() * GAME_WIDTH;
+        }
+        const st = VIS.stamps[c.tone];
+        const w = 140 * c.s, h = 70 * c.s;
+        ctx.globalAlpha = c.a;
+        ctx.drawImage(st, c.x - w / 2, c.y - h / 2, w, h);
+    }
+    ctx.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------- player
+function drawPlayerSprite(px, py) {
+    // banking from horizontal motion
+    if (VIS.lastPlayerX === null) VIS.lastPlayerX = px;
+    const dx = px - VIS.lastPlayerX;
+    VIS.lastPlayerX = px;
+    const target = Math.max(-0.28, Math.min(0.28, dx * 0.06));
+    VIS.bank += (target - VIS.bank) * 0.25;
+    const W = 56;
+    if (py + 22 > VIS.horizon) drawSpriteShadow(ctx, 'player_p38', px, py, W, VIS.bank, 0.28);
+    drawSprite(ctx, 'player_p38', px, py, W, VIS.bank, 1, 0);
+    // shield ring (kept from legacy)
+    if (player.shieldActive) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(0, 220, 255, ' + (0.5 + 0.3 * Math.sin(frameCount * 0.2)) + ')';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(px, py, 30, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = 'rgba(120, 240, 255, 0.3)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(px, py, 34, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+    }
+}
+
+// ---------------------------------------------------------------- enemies
+function drawEnemySprite(e) {
+    if (!SPR.ready) return false;
+    const type = e.type;
+    const ds = (!e.dying && e.drawScale) ? e.drawScale : 1;   // drawEnemy() already applied ctx.scale(drawScale)
+    const flash = (e.hitFlash && e.hitFlash > 0) ? Math.min(0.6, e.hitFlash * 0.6) : 0;  // brief white blink, silhouette stays readable
+    const NOSE_DOWN = Math.PI;
+    if (type === 'scout') {
+        drawSprite(ctx, 'enemy_zero', e.x, e.y, (e.width || 60) / ds, NOSE_DOWN, 1, flash);
+        return true;
+    }
+    if (type === 'fighter') {
+        drawSprite(ctx, 'enemy_ki61', e.x, e.y, (e.width || 72) / ds * 0.95, NOSE_DOWN, 1, flash);
+        return true;
+    }
+    if (type === 'bomber') {
+        drawSprite(ctx, 'enemy_g4m', e.x, e.y, (e.width || 86) / ds, NOSE_DOWN, 1, flash);
+        return true;
+    }
+    if (type === 'heavyBomber' || type === 'boss') {
+        // Mid-boss flies AHEAD of the player (nose up) — it leads the formation
+        // rather than charging head-on like the mooks.
+        const bank = e.dying ? (e.angle || 0) : Math.sin((e._movePhase || 0) * 1.2) * 0.15;
+        drawSprite(ctx, 'enemy_g4m', e.x, e.y, 150, bank, 1, flash);
+        drawBossEngineFire(e, 150);
+        return true;
+    }
+    if (type === 'rammer') {
+        drawSprite(ctx, 'enemy_ki61', e.x, e.y, (e.width || 48) * 1.2, NOSE_DOWN, 1, flash);
+        return true;
+    }
+    if (type === 'final') {
+        // threat aura
+        ctx.save();
+        ctx.translate(e.x, e.y);
+        ctx.fillStyle = VIS.grads.aura;
+        ctx.beginPath(); ctx.arc(0, 0, 200, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        const name = e.dying ? 'boss_body' : 'boss_heavy';
+        // long-bomber silhouette: keep the 340px wingspan, squash height so the
+        // body stays on screen at the boss's hover altitude
+        ctx.save();
+        ctx.translate(e.x, e.y); ctx.scale(1, 0.78); ctx.translate(-e.x, -e.y);
+        drawSprite(ctx, name, e.x, e.y, e.width || 340, NOSE_DOWN, 1, flash);
+        ctx.restore();
+        drawBossEngineFire(e, e.width || 340);
+        drawFinalBossShield(e);
+        return true;
+    }
+    if (type === 'waveBoss' || type === 'wave_boss') {
+        drawSprite(ctx, 'boss_heavy', e.x, e.y, e.width || 200, NOSE_DOWN + (e.dying ? (e.angle || 0) : 0), 1, flash);
+        return true;
+    }
+    return false;
+}
+
+// Damage feedback: engine fire + smoke puffs as HP drops (draw-only)
+function drawBossEngineFire(e, w) {
+    if (e.hp === undefined || e.maxHp === undefined || e.maxHp <= 0) return;
+    const ratio = e.hp / e.maxHp;
+    if (ratio > 0.5 && !e.dying) return;
+    const n = e.dying ? 3 : (ratio > 0.25 ? 1 : 2);
+    for (let i = 0; i < n; i++) {
+        const side = (i % 2 === 0) ? -1 : 1;
+        const ox = side * w * (0.18 + i * 0.08);
+        const fl = 0.6 + Math.sin(frameCount * 0.5 + i * 2) * 0.4;
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = '#FF7A1A';
+        ctx.beginPath(); ctx.arc(e.x + ox, e.y - 6, 5 + fl * 3, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#FFD24A';
+        ctx.beginPath(); ctx.arc(e.x + ox, e.y - 6, 2.5 + fl * 1.5, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = '#333';
+        const sy = (frameCount * 0.8 + i * 20) % 40;
+        ctx.beginPath(); ctx.arc(e.x + ox + Math.sin(frameCount * 0.1 + i) * 4, e.y - 14 - sy, 6 + sy * 0.15, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+}
+
+function drawFinalBossShield(e) {
+    if (!(e.entryInvuln && e.entryInvuln > 0)) return;
+    const ex = e.x, ey = e.y;
+    const pulse = 0.55 + 0.45 * Math.abs(Math.sin(frameCount * 0.25));
+    const ringR = 130 + Math.sin(frameCount * 0.4) * 4;
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.rotate(frameCount * 0.01);
+    ctx.beginPath();
+    for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        const qx = Math.cos(a) * ringR, qy = Math.sin(a) * ringR * 0.85;
+        if (k === 0) ctx.moveTo(qx, qy); else ctx.lineTo(qx, qy);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = 'rgba(80, 200, 255, ' + pulse + ')';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = 'rgba(120, 220, 255, ' + pulse + ')';
+    ctx.font = '8px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('SHIELD', ex, ey - 62);
+}
+
+// ---------------------------------------------------------------- bullets
+function drawBulletSprite(b, isEnemy) {
+    if (isEnemy) {
+        const pink = b.isHoming || b.ownerType === 'finalBoss' || b.color === '#FF4422';
+        // (2026-09) drawn slightly SMALLER than the hitbox box: the hitbox uses a
+        // 0.6 shrink, so a 24px bullet really hits at ~14px — the orb should look ~18px.
+        const w = Math.round((b.width || 24) * 0.78);
+        drawSprite(ctx, pink ? 'bullet_enemy_pink' : 'bullet_enemy', b.x, b.y, w, 0, 1, 0);
+    } else {
+        drawSprite(ctx, 'bullet_player', b.x, b.y, 10, b.angle || 0, 1, 0);
+    }
+}
+
+// ---------------------------------------------------------------- power-ups
+function drawPowerupSprite(p) {
+    const bob = Math.sin(frameCount * 0.1 + p.x * 0.05) * 3;
+    const x = p.x, y = p.y + bob;
+    const col = p.color || '#E2402A';
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(x, y, 18 + Math.sin(frameCount * 0.15) * 2, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(x, y, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#22200F'; ctx.lineWidth = 1.4; ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath(); ctx.arc(x, y, 9.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = col;
+    ctx.font = '11px "Press Start 2P", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    // item type → single badge letter (power=P, powerW=W, powerV=V, powerM=M,
+    // shield=S, bomb=B, drone=D, droneR=R)
+    const LETTERS = { power: 'P', powerW: 'W', powerV: 'V', powerM: 'M', shield: 'S', bomb: 'B', drone: 'D', droneR: 'R' };
+    const t = p.type || 'power';
+    ctx.fillText(LETTERS[t] || t.charAt(0).toUpperCase(), x, y + 1);
+    ctx.restore();
+}
+
+// ---------------------------------------------------------------- drones
+// Drones reuse player_p38 sprite at small scale with a pink tint overlay so
+// they read as friendly sidekicks rather than copies of the player plane.
+function drawDroneSprite(d) {
+    if (!SPR.ready) return false;
+    const W = 24;
+    drawSprite(ctx, 'player_p38', d.x, d.y, W, d.angle || 0, 1, 0);
+    // Tint pass — silhouette-shaped overlay (not a circle): homing drones pink,
+    // normal drones cyan, so the two drone kinds read at a glance.
+    const key = d.droneType === 'homing' ? 'tintPink' : 'tintCyan';
+    if (!VIS[key]) {
+        const src = SPR.flash['player_p38'];
+        if (src) {
+            const c = document.createElement('canvas');
+            c.width = src.width; c.height = src.height;
+            const g = c.getContext('2d');
+            g.drawImage(src, 0, 0);
+            g.globalCompositeOperation = 'source-in';
+            g.fillStyle = d.droneType === 'homing' ? '#FF5FB0' : '#4FD8FF';
+            g.fillRect(0, 0, c.width, c.height);
+            VIS[key] = c;
+        }
+    }
+    if (VIS[key]) {
+        const sz = SPRITE_SIZES['player_p38'];
+        const h = sz[1] * (W / sz[0]);
+        ctx.save();
+        ctx.globalAlpha = 0.45;
+        ctx.translate(d.x, d.y);
+        if (d.angle) ctx.rotate(d.angle);
+        ctx.drawImage(VIS[key], -W / 2, -h / 2, W, h);
+        ctx.restore();
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- drone bullets
+// Pink homing drone bullets reuse bullet_enemy_pink; normal drone bullets reuse
+// bullet_enemy. We differentiate via the bullet's isHoming flag.
+function drawDroneBulletSprite(b) {
+    if (!SPR.ready) return false;
+    // Friendly fire must never look like enemy fire: drone shots are small
+    // tracers in the player's yellow (homing ones get a pink core dot).
+    drawSprite(ctx, 'bullet_player', b.x, b.y, 7, b.angle || 0, 1, 0);
+    if (b.isHoming) {
+        ctx.save();
+        ctx.fillStyle = '#FF5FB0';
+        ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- missiles (M weapon)
+// Player missiles reuse bullet_player at a slightly larger scale + orange tint.
+function drawMissileSprite(m) {
+    if (!SPR.ready) return false;
+    // Missile: slim rocket body drawn to the missile's own hitbox (w×h, ~6×13),
+    // nose up, orange flame at the tail. (drawSprite's size arg is WIDTH.)
+    const w = Math.max(5, m.w || 6), h = Math.max(12, m.h || 13);
+    const ang = (typeof m.angle === 'number') ? m.angle : (m.vx ? Math.atan2(m.vx, -(m.vy || 1)) : 0);
+    ctx.save();
+    ctx.translate(m.x, m.y);
+    if (ang) ctx.rotate(ang);
+    // exhaust flame
+    const fl = 4 + Math.sin(frameCount * 0.9 + m.x) * 2;
+    ctx.fillStyle = 'rgba(255,150,40,0.85)';
+    ctx.beginPath(); ctx.moveTo(-w * 0.4, h / 2); ctx.lineTo(0, h / 2 + fl + 3); ctx.lineTo(w * 0.4, h / 2); ctx.closePath(); ctx.fill();
+    // body
+    ctx.fillStyle = m.homing ? '#E8E4D8' : '#D8DCE0';
+    ctx.strokeStyle = '#22200F'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, -h / 2); ctx.lineTo(w / 2, -h / 2 + w * 0.8); ctx.lineTo(w / 2, h / 2); ctx.lineTo(-w / 2, h / 2); ctx.lineTo(-w / 2, -h / 2 + w * 0.8); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // nose + fins
+    ctx.fillStyle = '#D8352B';
+    ctx.beginPath(); ctx.moveTo(0, -h / 2); ctx.lineTo(w / 2, -h / 2 + w * 0.8); ctx.lineTo(-w / 2, -h / 2 + w * 0.8); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#3A3F45';
+    ctx.fillRect(-w / 2 - 2, h / 2 - 4, 2, 4); ctx.fillRect(w / 2, h / 2 - 4, 2, 4);
+    ctx.restore();
+    return true;
+}
+
+// ---------------------------------------------------------------- laser beams (W ticks)
+// W-laser beams are thin energy lines from player to target. No dedicated
+// sprite, so we keep the legacy cyan glow drawing; the guard is added so the
+// sprite layer can extend it later. The legacy code already runs whenever
+// SPR is not ready (safe fallback), so this is a no-op guard.
+function drawLaserBeamSprite() {
+    // Intentionally empty — laser beams need a custom energy effect that no
+    // single sprite fits. The legacy drawLaserBeam() loop draws the beam as
+    // 3 stacked strokes (outer glow, mid beam, inner core) which already
+    // looks "sprite-like" once everything else uses the SVG set.
+    return true;
+}
+
+// ---------------------------------------------------------------- explosion flipbook
+function spawnBoom(x, y, scale) {
+    if (!SPR.ready) return;
+    if (VIS.booms.length > 40) VIS.booms.shift();
+    VIS.booms.push({ x: x, y: y, size: Math.max(40, 60 * (scale || 1)), t: 0, rot: (Math.random() - 0.5) * 0.6 });
+}
+function drawBooms() {
+    const ts = visTimeScale();
+    for (let i = VIS.booms.length - 1; i >= 0; i--) {
+        const b = VIS.booms[i];
+        const frame = Math.floor(b.t / 4);
+        if (frame > 3) { VIS.booms.splice(i, 1); continue; }
+        const grow = 1 + frame * 0.18;
+        const alpha = frame === 3 ? 1 - ((b.t % 4) / 4) * 0.7 : 1;
+        drawSprite(ctx, 'explosion_' + (frame + 1), b.x, b.y, b.size * grow, b.rot, alpha, 0);
+        b.t += ts;
+    }
+}
+
+// ---------------------------------------------------------------- HUD
+function drawUISprite() {
+    const PIX = '"Press Start 2P", monospace';
+    // top band
+    ctx.fillStyle = 'rgba(6, 14, 30, 0.66)';
+    ctx.fillRect(0, 0, GAME_WIDTH, 34);
+    ctx.fillStyle = '#35CFE3';
+    ctx.fillRect(0, 32, GAME_WIDTH, 2);
+
+    const label = (txt, x, align, col, shadow) => {
+        ctx.textAlign = align;
+        ctx.fillStyle = shadow;
+        ctx.fillText(txt, x, 23);
+        ctx.fillStyle = col;
+        ctx.fillText(txt, x, 21);
+    };
+    ctx.font = '11px ' + PIX;
+    ctx.textBaseline = 'alphabetic';
+    // left: 1P + score
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#35CFE3'; ctx.fillText('1P', 12, 21);
+    label(score.toString().padStart(7, '0'), 44, 'left', '#FFD43A', '#3E2A00');
+    // center: HI
+    ctx.textAlign = 'center';
+    const hiStr = highScore.toString().padStart(7, '0');
+    ctx.fillStyle = '#FF8A3A'; ctx.fillText('HI', GAME_WIDTH / 2 - 50, 21);
+    label(hiStr, GAME_WIDTH / 2 + 12, 'center', '#FFC46B', '#3E2A00');
+    // right: stage
+    ctx.fillStyle = '#7CF29A'; ctx.textAlign = 'right'; ctx.fillText('ST', GAME_WIDTH - 32, 21);
+    label(String(currentStage), GAME_WIDTH - 12, 'right', '#B8FFC8', '#003A1A');
+
+    // lives (mini P-38) + bombs (bomb icon)
+    for (let i = 0; i < Math.min(player.lives, 6); i++) {
+        drawSprite(ctx, 'player_p38', 22 + i * 23, 50, 19, 0, 1, 0);
+    }
+    for (let i = 0; i < Math.min(player.bombs, 6); i++) {
+        drawSprite(ctx, 'bomb_icon', GAME_WIDTH - 19 - i * 19, 50, 14, 0, 1, 0);
+    }
+    // power level pips
+    if (player.powerLevel > 0) {
+        ctx.font = '7px ' + PIX;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#9EE8FF';
+        ctx.fillText('PWR', 12, 74);
+        for (let i = 0; i < Math.min(player.powerLevel, 8); i++) {
+            ctx.fillStyle = '#FFD43A';
+            ctx.fillRect(40 + i * 8, 67, 5, 7);
+        }
+    }
+
+    // wave announce (sub-wave start)
+    if (waveAnnounceTimer > 0 && waveAnnounceText) {
+        const t = waveAnnounceTimer / WAVE_FLASH_DURATION;
+        let alpha = 1;
+        if (t > 0.7) alpha = (1 - t) / 0.3; else if (t < 0.3) alpha = t / 0.3;
+        alpha = Math.max(0, Math.min(1, alpha));
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.textAlign = 'center';
+        ctx.font = '22px ' + PIX;
+        ctx.fillStyle = '#1A2A40';
+        ctx.fillText(waveAnnounceText, GAME_WIDTH / 2 + 3, 303);
+        ctx.fillStyle = '#FFF3D6';
+        ctx.fillText(waveAnnounceText, GAME_WIDTH / 2, 300);
+        const tw = ctx.measureText(waveAnnounceText).width;
+        ctx.fillStyle = 'rgba(255,243,214,0.8)';
+        ctx.fillRect(GAME_WIDTH / 2 - tw / 2 - 84, 291, 70, 2);
+        ctx.fillRect(GAME_WIDTH / 2 + tw / 2 + 14, 291, 70, 2);
+        ctx.font = '8px ' + PIX;
+        ctx.fillStyle = '#FFE8B0';
+        ctx.fillText('NEXT AREA ' + currentStage + '-' + Math.min(stageWave + 1, STAGE_WAVES), GAME_WIDTH / 2, 322);
+        ctx.restore();
+    }
+    // WAVE banner (stage timer)
+    if (stageTimer < 120 && stageWave) {
+        const alpha = Math.min(1, stageTimer < 60 ? (stageTimer / 60) : (1 - (stageTimer - 60) / 60));
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, alpha);
+        ctx.textAlign = 'center';
+        ctx.font = '22px ' + PIX;
+        const txt = 'WAVE ' + stageWave;
+        ctx.fillStyle = '#1A2A40'; ctx.fillText(txt, GAME_WIDTH / 2 + 3, 343);
+        ctx.fillStyle = '#FFF3D6'; ctx.fillText(txt, GAME_WIDTH / 2, 340);
+        const tw = ctx.measureText(txt).width;
+        ctx.fillStyle = 'rgba(255,243,214,0.8)';
+        ctx.fillRect(GAME_WIDTH / 2 - tw / 2 - 84, 331, 70, 2);
+        ctx.fillRect(GAME_WIDTH / 2 + tw / 2 + 14, 331, 70, 2);
+        ctx.restore();
+    }
+
+    // combo popup — floats above the player
+    if (comboCount >= 2 && comboTimer > 0) {
+        const cx = Math.max(70, Math.min(GAME_WIDTH - 70, player.x));
+        const cy = Math.max(120, player.y - 52);
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.font = '13px ' + PIX;
+        const txt = comboCount + 'x COMBO';
+        ctx.fillStyle = '#4A2500';
+        ctx.fillText(txt, cx + 2, cy + 2);
+        ctx.fillText(txt, cx - 1, cy - 1);
+        ctx.fillStyle = '#FFD43A';
+        ctx.fillText(txt, cx, cy);
+        ctx.font = '8px ' + PIX;
+        ctx.fillStyle = '#1A2A40'; ctx.fillText('+' + comboBonus(comboCount), cx + 1, cy + 15);
+        ctx.fillStyle = '#FFFFFF'; ctx.fillText('+' + comboBonus(comboCount), cx, cy + 14);
+        ctx.restore();
+    }
+    if (maxCombo > 0) {
+        ctx.font = '9px ' + PIX;
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#06213A'; ctx.fillText('MAX ' + maxCombo + 'x', GAME_WIDTH - 12, GAME_HEIGHT - 12);
+        ctx.fillStyle = '#9EE8FF'; ctx.fillText('MAX ' + maxCombo + 'x', GAME_WIDTH - 12, GAME_HEIGHT - 14);
+    }
+
+    // boss HP bar — VERTICAL gauge on the right edge (never overlaps the boss
+    // that hovers top-center). Name on top, numbers underneath, 3-step color.
+    const boss = enemies.find(e => e && (e.isFinalBoss || e.isMidBoss || e.isWaveBoss || e.type === 'final' || e.type === 'heavyBomber' || e.type === 'waveBoss' || e.type === 'wave_boss'));
+    if (boss && boss.hp !== undefined && boss.maxHp !== undefined && !boss.dying) {
+        const ratio = Math.max(0, Math.min(1, boss.hp / boss.maxHp));
+        const name = boss.type === 'final' ? 'FINAL' : (boss.type === 'heavyBomber' || boss.type === 'boss') ? 'HEAVY' : 'BOSS';
+        const bx = GAME_WIDTH - 24, by = 84, bw = 12, bh = 220;
+        ctx.font = '7px ' + PIX;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#2A1200'; ctx.fillText(name, bx + bw / 2 + 1, by - 7);
+        ctx.fillStyle = '#FFE8B0'; ctx.fillText(name, bx + bw / 2, by - 8);
+        ctx.fillStyle = '#E8D9A8'; ctx.fillRect(bx, by, bw, bh);
+        ctx.fillStyle = '#0A1425'; ctx.fillRect(bx + 2, by + 2, bw - 4, bh - 4);
+        const col = ratio > 0.5 ? '#5DE36A' : ratio > 0.25 ? '#FFC83A' : '#FF5A3A';
+        const fh = Math.floor((bh - 8) * ratio);
+        if (fh > 0) {
+            // fills from the bottom up
+            ctx.fillStyle = col; ctx.fillRect(bx + 4, by + bh - 4 - fh, bw - 8, fh);
+            ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fillRect(bx + 4, by + bh - 4 - fh, 2, fh);
+        }
+        // tick marks at 25/50/75%
+        ctx.fillStyle = 'rgba(232,217,168,0.7)';
+        for (let q = 1; q < 4; q++) ctx.fillRect(bx + 2, by + 4 + Math.floor((bh - 8) * q / 4), bw - 4, 1);
+        ctx.font = '6px ' + PIX;
+        const hpTxt = Math.round(boss.hp) + '/' + Math.round(boss.maxHp);
+        ctx.fillStyle = '#06213A'; ctx.fillText(hpTxt, bx + bw / 2 + 1, by + bh + 11);
+        ctx.fillStyle = '#FFFFFF'; ctx.fillText(hpTxt, bx + bw / 2, by + bh + 10);
+    }
+
+    // hit markers (kept)
+    for (let i = 0; i < hitMarkers.length; i++) {
+        const hm = hitMarkers[i];
+        if (!hm) continue;
+        ctx.save();
+        ctx.translate(hm.x, hm.y);
+        ctx.rotate(hm.angle || 0);
+        ctx.strokeStyle = 'rgba(255, 255, 0, ' + (hm.timer / 30) + ')';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.moveTo(0, -6); ctx.lineTo(0, 6); ctx.stroke();
+        ctx.restore();
+    }
+    ctx.textAlign = 'left';
+}
+// ===================== END SPRITE VISUAL LAYER ================================
+
 function drawBackground() {
+    if (SPR.ready) { drawBackgroundSprite(); return; }
+    drawBackgroundLegacy();
+}
+function drawBackgroundLegacy() {
     // === 1945 themed sky + clouds + ocean horizon (replaces deep-space backdrop) ===
     // Sky gradient — uses cached gradient when available to avoid per-frame alloc
     if (GRAD_CACHE.bgSkyDusk) {
@@ -6166,7 +7084,7 @@ function drawPlayer() {
     const py = player.y;
 
     // Engine flame (animated, behind ship) — propeller-style dual exhaust
-    if (player.visible) {
+    if (player.visible && !SPR.ready) {
         const flameLen = 12 + Math.sin(frameCount * 0.6) * 3;
         const flameWobble = Math.sin(frameCount * 0.8) * 1.5;
         // Outer flame
@@ -6198,6 +7116,7 @@ function drawPlayer() {
         ctx.fill();
     }
 
+    if (SPR.ready) { drawPlayerSprite(px, py); } else {
     ctx.save();
     // Soft shadow under the plane
     ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
@@ -6441,6 +7360,7 @@ function drawPlayer() {
         ctx.stroke();
     }
     ctx.restore();
+    }
 
     // V-power shield (silver)
     if (player.vPowerActive) {
@@ -6494,8 +7414,22 @@ function drawPlayer() {
             ctx.fill();
         }
     }
+
+    // === DEBUG HITBOX (2026-09) ===
+    // Toggle window.DEBUG_HITBOX = true (devtools) to visualize the small
+    // player fuselage hitbox. Drew AFTER legacy vectors + sprite path so the
+    // box reads on top of every player layer. Off by default.
+    if (window.DEBUG_HITBOX) {
+        ctx.save();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#FF0044';
+        const hw = player.hitW / 2;
+        const hh = player.hitH / 2;
+        ctx.strokeRect(player.x - hw, player.y - hh, player.hitW, player.hitH);
+        ctx.restore();
+    }
 }
-    
+
     function drawOctopusTentacles() {
         for (let ti = 0; ti < octopusTentacles.length; ti++) {
             const tentacle = octopusTentacles[ti];
@@ -6683,7 +7617,9 @@ function drawPlayer() {
                 ctx.translate(-e.x, -e.y);
             }
 
-            if (e.type === 'scout') {
+            if (SPR.ready && drawEnemySprite(e)) {
+                // sprite layer drew this enemy
+            } else if (e.type === 'scout') {
                 drawScoutEnemy(e);
             } else if (e.type === 'fighter') {
                 drawFighterEnemy(e);
@@ -7056,184 +7992,214 @@ function drawPlayer() {
     function drawBomberEnemy(e) {
         const ex = e.x, ey = e.y;
         // NOTE (2026-09): drop shadow removed — see drawScoutEnemy.
-        // ===== Main wing — horizontal slab connecting the two booms =====
+        // ---- Redesign (2026-09): trimmed down from a 56-wide slab to a snappier
+        // ~36-wide silhouette. Total footprint fits a "twin-prop light fighter"
+        // (Mosquito/Bf 110 proportions) rather than a B-52-ish slab. Every
+        // component is mirrored exactly across the centerline so the shape
+        // reads as a classic symmetric WWII twin-engined fighter.
+        const W = 18;       // wingtip half-width (was 28)
+        const WING_H = 4;   // wing thickness (was 4)
+        const FUSE_HW = 3.5;// fuselage half-width (was 4.5)
+        const NAC_X = 14;   // engine nacelle center x (was 25)
+        const NAC_W = 3;    // nacelle ellipse rx
+        const NAC_H = 3.2;  // nacelle ellipse ry
+        const PROP_X = 18;  // propeller disk x (was 28)
+        const BOOM_IX = 7;  // tail boom inner x (was 13)
+        const BOOM_OX = 9;  // tail boom outer x (was 19)
+        const BOOM_Y2 = 10; // tail boom rear y (was 12)
+        const FIN_IX = 6;   // fin inner base x (was 17)
+        const FIN_OX = 10;  // fin outer x (was 21)
+        const FIN_Y1 = 7;   // fin root y (was 9)
+        const FIN_Y2 = 15;  // fin tip y (was 18)
+        const STAB_Y1 = 13; // stabilizer top y (was 16)
+
+        // ===== Main wing — slim slab swept slightly back at the tips =====
         ctx.fillStyle = GRAD_CACHE.bomberWing;
         ctx.beginPath();
-        ctx.moveTo(ex - 28, ey - 2);
-        ctx.quadraticCurveTo(ex - 22, ey - 5, ex - 14, ey - 4);
-        ctx.lineTo(ex + 14, ey - 4);
-        ctx.quadraticCurveTo(ex + 22, ey - 5, ex + 28, ey - 2);
-        ctx.quadraticCurveTo(ex + 28, ey + 5, ex + 14, ey + 6);
-        ctx.lineTo(ex - 14, ey + 6);
-        ctx.quadraticCurveTo(ex - 28, ey + 5, ex - 28, ey - 2);
+        ctx.moveTo(ex - W, ey - WING_H + 2);
+        ctx.quadraticCurveTo(ex - W + 2, ey - WING_H - 1, ex - W * 0.55, ey - WING_H);
+        ctx.lineTo(ex + W * 0.55, ey - WING_H);
+        ctx.quadraticCurveTo(ex + W - 2, ey - WING_H - 1, ex + W, ey - WING_H + 2);
+        ctx.quadraticCurveTo(ex + W, ey + WING_H + 2, ex + W * 0.55, ey + WING_H + 1);
+        ctx.lineTo(ex - W * 0.55, ey + WING_H + 1);
+        ctx.quadraticCurveTo(ex - W, ey + WING_H + 2, ex - W, ey - WING_H + 2);
         ctx.closePath();
         ctx.fill();
-        // ===== Twin tail booms (extending from each engine nacelle rearward) =====
-        // Left boom
+
+        // ===== Twin tail booms (parallel to fuselage, taper outward) =====
         ctx.fillStyle = GRAD_CACHE.bomberBody;
+        // Left boom
         ctx.beginPath();
-        ctx.moveTo(ex - 19, ey - 2);
-        ctx.lineTo(ex - 21, ey + 12);
-        ctx.lineTo(ex - 15, ey + 12);
-        ctx.lineTo(ex - 13, ey - 2);
+        ctx.moveTo(ex - BOOM_OX, ey - WING_H + 2);
+        ctx.lineTo(ex - BOOM_OX - 1, ey + BOOM_Y2);
+        ctx.lineTo(ex - BOOM_IX, ey + BOOM_Y2);
+        ctx.lineTo(ex - BOOM_IX, ey - WING_H + 2);
         ctx.closePath();
         ctx.fill();
         // Right boom
         ctx.beginPath();
-        ctx.moveTo(ex + 19, ey - 2);
-        ctx.lineTo(ex + 21, ey + 12);
-        ctx.lineTo(ex + 15, ey + 12);
-        ctx.lineTo(ex + 13, ey - 2);
+        ctx.moveTo(ex + BOOM_IX, ey - WING_H + 2);
+        ctx.lineTo(ex + BOOM_IX, ey + BOOM_Y2);
+        ctx.lineTo(ex + BOOM_OX + 1, ey + BOOM_Y2);
+        ctx.lineTo(ex + BOOM_OX, ey - WING_H + 2);
         ctx.closePath();
         ctx.fill();
-        // ===== Outboard engine nacelles (cylindrical pods at wingtips) =====
+
+        // ===== Outboard engine nacelles (inboard of the wingtips) =====
         ctx.fillStyle = '#3F4754';
         ctx.beginPath();
-        ctx.ellipse(ex - 25, ey, 4, 3.5, 0, 0, Math.PI * 2);
+        ctx.ellipse(ex - NAC_X, ey, NAC_W, NAC_H, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.ellipse(ex + 25, ey, 4, 3.5, 0, 0, Math.PI * 2);
+        ctx.ellipse(ex + NAC_X, ey, NAC_W, NAC_H, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Propeller disks (light blur effect) at each nacelle tip
+
+        // Propeller disks (light blur effect) right outboard of each nacelle
         ctx.fillStyle = 'rgba(220, 230, 240, 0.55)';
         ctx.beginPath();
-        ctx.ellipse(ex - 28, ey, 1.8, 5, 0, 0, Math.PI * 2);
+        ctx.ellipse(ex - PROP_X, ey, 1.6, 4.5, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.ellipse(ex + 28, ey, 1.8, 5, 0, 0, Math.PI * 2);
+        ctx.ellipse(ex + PROP_X, ey, 1.6, 4.5, 0, 0, Math.PI * 2);
         ctx.fill();
         // Propeller hub dots
         ctx.fillStyle = '#FFD700';
         ctx.beginPath();
-        ctx.arc(ex - 28, ey, 0.8, 0, Math.PI * 2);
+        ctx.arc(ex - PROP_X, ey, 0.7, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(ex + 28, ey, 0.8, 0, Math.PI * 2);
+        ctx.arc(ex + PROP_X, ey, 0.7, 0, Math.PI * 2);
         ctx.fill();
-        // ===== Central nacelle (pilot pod) — distinctive P-38 feature =====
+
+        // ===== Central nacelle (pilot pod) — slimmer & longer than before =====
         ctx.fillStyle = GRAD_CACHE.bomberBody;
         ctx.beginPath();
-        ctx.moveTo(ex, ey - 14);
-        ctx.quadraticCurveTo(ex + 4.5, ey - 10, ex + 4.5, ey - 4);
-        ctx.lineTo(ex + 4.5, ey + 8);
-        ctx.quadraticCurveTo(ex + 2.5, ey + 10, ex, ey + 10);
-        ctx.quadraticCurveTo(ex - 2.5, ey + 10, ex - 4.5, ey + 8);
-        ctx.lineTo(ex - 4.5, ey - 4);
-        ctx.quadraticCurveTo(ex - 4.5, ey - 10, ex, ey - 14);
+        ctx.moveTo(ex, ey - 13);
+        ctx.quadraticCurveTo(ex + FUSE_HW, ey - 9, ex + FUSE_HW, ey - 3);
+        ctx.lineTo(ex + FUSE_HW, ey + 7);
+        ctx.quadraticCurveTo(ex + FUSE_HW - 0.5, ey + 9, ex, ey + 9);
+        ctx.quadraticCurveTo(ex - FUSE_HW + 0.5, ey + 9, ex - FUSE_HW, ey + 7);
+        ctx.lineTo(ex - FUSE_HW, ey - 3);
+        ctx.quadraticCurveTo(ex - FUSE_HW, ey - 9, ex, ey - 13);
         ctx.closePath();
         ctx.fill();
-        // ===== Twin tail fins (the iconic "fork-tailed" P-38 silhouette) =====
+
+        // ===== Twin tail fins (compact "fork tail" — root at boom tips) =====
         ctx.fillStyle = '#5C6A78';
+        // Left fin
         ctx.beginPath();
-        ctx.moveTo(ex - 21, ey + 9);
-        ctx.lineTo(ex - 24, ey + 18);
-        ctx.lineTo(ex - 20, ey + 18);
-        ctx.lineTo(ex - 17, ey + 9);
+        ctx.moveTo(ex - BOOM_OX - 1, ey + FIN_Y1);
+        ctx.lineTo(ex - FIN_OX, ey + FIN_Y2);
+        ctx.lineTo(ex - FIN_OX + 2, ey + FIN_Y2);
+        ctx.lineTo(ex - FIN_IX, ey + FIN_Y1);
         ctx.closePath();
         ctx.fill();
+        // Right fin (exact mirror)
         ctx.beginPath();
-        ctx.moveTo(ex + 21, ey + 9);
-        ctx.lineTo(ex + 24, ey + 18);
-        ctx.lineTo(ex + 20, ey + 18);
-        ctx.lineTo(ex + 17, ey + 9);
+        ctx.moveTo(ex + FIN_IX, ey + FIN_Y1);
+        ctx.lineTo(ex + FIN_OX - 2, ey + FIN_Y2);
+        ctx.lineTo(ex + FIN_OX, ey + FIN_Y2);
+        ctx.lineTo(ex + BOOM_OX + 1, ey + FIN_Y1);
         ctx.closePath();
         ctx.fill();
         // Horizontal stabilizer between the two fins
         ctx.fillStyle = '#7A8894';
         ctx.beginPath();
-        ctx.moveTo(ex - 22, ey + 16);
-        ctx.lineTo(ex + 22, ey + 16);
-        ctx.lineTo(ex + 22, ey + 18);
-        ctx.lineTo(ex - 22, ey + 18);
+        ctx.moveTo(ex - FIN_OX + 2, ey + STAB_Y1);
+        ctx.lineTo(ex + FIN_OX - 2, ey + STAB_Y1);
+        ctx.lineTo(ex + FIN_OX - 2, ey + STAB_Y1 + 2);
+        ctx.lineTo(ex - FIN_OX + 2, ey + STAB_Y1 + 2);
         ctx.closePath();
         ctx.fill();
+
         // ===== Canopy (pilot greenhouse atop the central nacelle) =====
         ctx.fillStyle = GRAD_CACHE.bomberCanopy;
         ctx.beginPath();
-        ctx.ellipse(ex, ey - 8, 3, 3.5, 0, 0, Math.PI * 2);
+        ctx.ellipse(ex, ey - 7, 2.6, 3.2, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = '#2A3640';
         ctx.lineWidth = 0.4;
         ctx.stroke();
-        // ===== USAAC white star roundel on each wing =====
+
+        // ===== USAAC white star roundel on each wing (smaller, inboard) =====
         ctx.fillStyle = '#F0F0E8';
         ctx.beginPath();
-        ctx.arc(ex - 19, ey + 1, 1.8, 0, Math.PI * 2);
+        ctx.arc(ex - 11, ey + 1, 1.4, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#3A4858';
         ctx.beginPath();
-        ctx.arc(ex - 19, ey + 1, 0.9, 0, Math.PI * 2);
+        ctx.arc(ex - 11, ey + 1, 0.7, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#F0F0E8';
         ctx.beginPath();
-        ctx.arc(ex + 19, ey + 1, 1.8, 0, Math.PI * 2);
+        ctx.arc(ex + 11, ey + 1, 1.4, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#3A4858';
         ctx.beginPath();
-        ctx.arc(ex + 19, ey + 1, 0.9, 0, Math.PI * 2);
+        ctx.arc(ex + 11, ey + 1, 0.7, 0, Math.PI * 2);
         ctx.fill();
-        // Wing outline (top arc) — thickened (2026-09) from 0.5 to 1.5 so the
-        // twin-boom silhouette stays legible without the drop shadow.
+
+        // ===== Outlines (mirrored to match the new slimmer shape) =====
         ctx.strokeStyle = '#161B22';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.2;
+        // Wing outline
         ctx.beginPath();
-        ctx.moveTo(ex - 28, ey - 2);
-        ctx.quadraticCurveTo(ex - 22, ey - 5, ex - 14, ey - 4);
-        ctx.lineTo(ex + 14, ey - 4);
-        ctx.quadraticCurveTo(ex + 22, ey - 5, ex + 28, ey - 2);
-        ctx.quadraticCurveTo(ex + 28, ey + 5, ex + 14, ey + 6);
-        ctx.lineTo(ex - 14, ey + 6);
-        ctx.quadraticCurveTo(ex - 28, ey + 5, ex - 28, ey - 2);
+        ctx.moveTo(ex - W, ey - WING_H + 2);
+        ctx.quadraticCurveTo(ex - W + 2, ey - WING_H - 1, ex - W * 0.55, ey - WING_H);
+        ctx.lineTo(ex + W * 0.55, ey - WING_H);
+        ctx.quadraticCurveTo(ex + W - 2, ey - WING_H - 1, ex + W, ey - WING_H + 2);
+        ctx.quadraticCurveTo(ex + W, ey + WING_H + 2, ex + W * 0.55, ey + WING_H + 1);
+        ctx.lineTo(ex - W * 0.55, ey + WING_H + 1);
+        ctx.quadraticCurveTo(ex - W, ey + WING_H + 2, ex - W, ey - WING_H + 2);
         ctx.closePath();
         ctx.stroke();
-        // Fuselage outline (inherits the 1.5 lineWidth set for the wing)
-        ctx.strokeStyle = '#161B22';
+        // Fuselage outline
         ctx.beginPath();
-        ctx.moveTo(ex, ey - 14);
-        ctx.quadraticCurveTo(ex + 4.5, ey - 10, ex + 4.5, ey - 4);
-        ctx.lineTo(ex + 4.5, ey + 8);
-        ctx.quadraticCurveTo(ex + 2.5, ey + 10, ex, ey + 10);
-        ctx.quadraticCurveTo(ex - 2.5, ey + 10, ex - 4.5, ey + 8);
-        ctx.lineTo(ex - 4.5, ey - 4);
-        ctx.quadraticCurveTo(ex - 4.5, ey - 10, ex, ey - 14);
+        ctx.moveTo(ex, ey - 13);
+        ctx.quadraticCurveTo(ex + FUSE_HW, ey - 9, ex + FUSE_HW, ey - 3);
+        ctx.lineTo(ex + FUSE_HW, ey + 7);
+        ctx.quadraticCurveTo(ex + FUSE_HW - 0.5, ey + 9, ex, ey + 9);
+        ctx.quadraticCurveTo(ex - FUSE_HW + 0.5, ey + 9, ex - FUSE_HW, ey + 7);
+        ctx.lineTo(ex - FUSE_HW, ey - 3);
+        ctx.quadraticCurveTo(ex - FUSE_HW, ey - 9, ex, ey - 13);
         ctx.closePath();
         ctx.stroke();
         // Tail boom outlines
         ctx.beginPath();
-        ctx.moveTo(ex - 19, ey - 2);
-        ctx.lineTo(ex - 21, ey + 12);
-        ctx.lineTo(ex - 15, ey + 12);
-        ctx.lineTo(ex - 13, ey - 2);
+        ctx.moveTo(ex - BOOM_OX, ey - WING_H + 2);
+        ctx.lineTo(ex - BOOM_OX - 1, ey + BOOM_Y2);
+        ctx.lineTo(ex - BOOM_IX, ey + BOOM_Y2);
+        ctx.lineTo(ex - BOOM_IX, ey - WING_H + 2);
         ctx.closePath();
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(ex + 19, ey - 2);
-        ctx.lineTo(ex + 21, ey + 12);
-        ctx.lineTo(ex + 15, ey + 12);
-        ctx.lineTo(ex + 13, ey - 2);
+        ctx.moveTo(ex + BOOM_IX, ey - WING_H + 2);
+        ctx.lineTo(ex + BOOM_IX, ey + BOOM_Y2);
+        ctx.lineTo(ex + BOOM_OX + 1, ey + BOOM_Y2);
+        ctx.lineTo(ex + BOOM_OX, ey - WING_H + 2);
         ctx.closePath();
         ctx.stroke();
-        // Twin tail fin outlines (2026-09) — the fork tail is the P-38's most
-        // recognisable cue, so it gets an explicit outline too.
+        // Twin tail fin outlines (the fork tail cue stays)
         ctx.beginPath();
-        ctx.moveTo(ex - 21, ey + 9);
-        ctx.lineTo(ex - 24, ey + 18);
-        ctx.lineTo(ex - 20, ey + 18);
-        ctx.lineTo(ex - 17, ey + 9);
+        ctx.moveTo(ex - BOOM_OX - 1, ey + FIN_Y1);
+        ctx.lineTo(ex - FIN_OX, ey + FIN_Y2);
+        ctx.lineTo(ex - FIN_OX + 2, ey + FIN_Y2);
+        ctx.lineTo(ex - FIN_IX, ey + FIN_Y1);
         ctx.closePath();
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(ex + 21, ey + 9);
-        ctx.lineTo(ex + 24, ey + 18);
-        ctx.lineTo(ex + 20, ey + 18);
-        ctx.lineTo(ex + 17, ey + 9);
+        ctx.moveTo(ex + FIN_IX, ey + FIN_Y1);
+        ctx.lineTo(ex + FIN_OX - 2, ey + FIN_Y2);
+        ctx.lineTo(ex + FIN_OX, ey + FIN_Y2);
+        ctx.lineTo(ex + BOOM_OX + 1, ey + FIN_Y1);
         ctx.closePath();
         ctx.stroke();
-        // Hit flash overlay
+
+        // Hit flash overlay (shrunk to match the new footprint)
         if (e.hitFlash && e.hitFlash > 0) {
             ctx.fillStyle = 'rgba(255, 255, 255, ' + (e.hitFlash * 0.6) + ')';
             ctx.beginPath();
-            ctx.ellipse(ex, ey, 26, 18, 0, 0, Math.PI * 2);
+            ctx.ellipse(ex, ey, 17, 12, 0, 0, Math.PI * 2);
             ctx.fill();
         }
     }
@@ -7891,7 +8857,6 @@ function drawPlayer() {
         // === Tail section (damageable) — slim rear boom — PERF: cached gradient ===
         // x -10..+10, y +20..+50
         ctx.fillStyle = GRAD_CACHE.finalTail;
-        ctx.fillStyle = tailGrad;
         ctx.beginPath();
         ctx.moveTo(ex - 12, ey + 18);
         ctx.lineTo(ex - 8, ey + 48);
@@ -8007,9 +8972,45 @@ function drawPlayer() {
             ctx.textAlign = 'center';
             ctx.fillText('FINAL BOSS', ex, barY - 4);
         }
+
+        // === FIX C: SHIELD ring during entry invulnerability (90 frames / 1.5s) ===
+        // Tells the player their bullets are being deflected (not "boss is bugged").
+        // Pulsing cyan octagon, with "SHIELD" label above the HP bar.
+        if (e.entryInvuln && e.entryInvuln > 0) {
+            const t = e.entryInvuln;
+            const pulse = 0.55 + 0.45 * Math.abs(Math.sin(frameCount * 0.25));
+            const ringR = 130 + Math.sin(frameCount * 0.4) * 4;
+            ctx.save();
+            ctx.translate(ex, ey);
+            ctx.rotate(frameCount * 0.01);
+            ctx.beginPath();
+            for (let k = 0; k < 8; k++) {
+                const a = (k / 8) * Math.PI * 2;
+                const px = Math.cos(a) * ringR;
+                const py = Math.sin(a) * ringR * 0.85;
+                if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            ctx.strokeStyle = `rgba(80, 200, 255, ${pulse})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            // Inner faint ring
+            ctx.beginPath();
+            ctx.arc(0, 0, ringR * 0.75, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(120, 220, 255, ${pulse * 0.4})`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.restore();
+            // Label above the HP bar
+            ctx.fillStyle = `rgba(120, 220, 255, ${pulse})`;
+            ctx.font = 'bold 8px "Press Start 2P", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('SHIELD', ex, ey - 62);
+        }
     }
         function drawBullet(bullet, isEnemy) {
         if (!bullet) return;
+        if (SPR.ready && !bullet.isBomb) { drawBulletSprite(bullet, isEnemy); return; }
         if (isEnemy) {
             if (bullet.isBomb) {
                 // ===== B-52 bomb-trail bullet — large aerial bomb silhouette (doubled) =====
@@ -8105,6 +9106,7 @@ function drawPlayer() {
         for (let i = 0; i < powerups.length; i++) {
             const p = powerups[i];
             if (!p) continue;
+            if (SPR.ready) { drawPowerupSprite(p); continue; }
             ctx.save();
             ctx.translate(p.x, p.y);
             // Outer rotating glow (PERF: skip shadowBlur in perf mode)
@@ -8154,6 +9156,7 @@ function drawPlayer() {
         for (let i = 0; i < drones.length; i++) {
             const d = drones[i];
             if (!d) continue;
+            if (SPR.ready) { drawDroneSprite(d); continue; }
             ctx.save();
             ctx.translate(d.x, d.y);
             ctx.rotate(d.angle || 0);
@@ -8268,6 +9271,7 @@ function drawPlayer() {
         for (let i = 0; i < droneBullets.length; i++) {
             const b = droneBullets[i];
             if (!b) continue;
+            if (SPR.ready) { drawDroneBulletSprite(b); continue; }
             ctx.save();
             ctx.translate(b.x, b.y);
             if (b.angle !== undefined) ctx.rotate(b.angle);
@@ -8309,6 +9313,7 @@ function drawPlayer() {
         // visibly drop frames even on dev hardware. Crossover to the simple
         // fillStyle + arc + fill fast path earlier.
         var overloaded = explosions.length > 50;
+        if (SPR.ready) drawBooms();
         for (let i = 0; i < explosions.length; i++) {
             const e = explosions[i];
             if (!e) continue;
@@ -8505,6 +9510,7 @@ function drawPlayer() {
         for (let i = 0; i < missiles.length; i++) {
             const m = missiles[i];
             if (!m) continue;
+            if (SPR.ready) { drawMissileSprite(m); continue; }
             ctx.save();
             ctx.translate(m.x, m.y);
             if (m.angle !== undefined) ctx.rotate(m.angle);
@@ -8601,6 +9607,14 @@ function drawPlayer() {
         }
     }
         function drawUI() {
+        if (SPR.ready) { drawUISprite(); return; }
+        // === FORMATION BONUS BANNER (2026-09) ===
+        // Drawn inside drawUI's legacy path so it's visible when sprites are
+        // disabled. The sprite-enabled path uses the post-drawUI hook in
+        // gameLoop (drawFormationBonusBanner() runs there too).
+        if (bonusTimer > 0 && bonusText) {
+            drawFormationBonusBanner();
+        }
         // Top bar — semi-transparent dark panel with subtle amber border
         ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
         ctx.fillRect(0, 0, GAME_WIDTH, 34);
@@ -8712,7 +9726,7 @@ function drawPlayer() {
             ctx.fillText(comboCount + 'x COMBO!', 0, 0);
             ctx.font = 'bold 12px monospace';
             ctx.fillStyle = '#FFFFFF';
-            ctx.fillText('+' + (comboCount * 50), 0, 18);
+            ctx.fillText('+' + comboBonus(comboCount), 0, 18);
             ctx.shadowBlur = 0;
             ctx.restore();
         }
@@ -8947,22 +9961,20 @@ function drawPlayer() {
             }
 
             // Boss claws & tentacles
-            try { drawBossClaw(); } catch(e) {}
-            try { drawOctopusTentacles(); } catch(e) {}
+            try { drawBossClaw(); } catch(e) { console.error('drawBossClaw:', e.message); }
+            try { drawOctopusTentacles(); } catch(e) { console.error('drawOctopusTentacles:', e.message); }
 
-            // Enemies
-            for (let i = enemies.length - 1; i >= 0; i--) {
-                const _en = enemies[i];
-                if (_en) { try { drawEnemy(_en); } catch(e) {} }
-            }
+            // Enemies — FIX B: drawEnemy() takes no arg and internally iterates the
+            // entire `enemies` array. The previous per-entity loop called it N times
+            // for N enemies (each enemy drawn N times → dying alpha stacked N times
+            // AND any throw inside the loop skipped all subsequent enemies). Call once.
+            try { drawEnemy(); } catch(e) { console.error('drawEnemy:', e.message); }
 
             // Detached boss wing debris (drawn between enemies and explosions so smoke overlays it)
             try { drawBossWingDebris(); } catch(e) { console.error('drawBossWingDebris:', e.message); }
 
             // === MOOK DESTRUCTION: small detached wing/body chunks from regular enemy kills ===
             try { drawEnemyDebris(); } catch(e) { console.error('drawEnemyDebris:', e.message); }
-            // === PLAYER DESTRUCTION: detached wing/body chunks from player death ===
-            try { drawPlayerDebris(); } catch(e) { console.error('drawPlayerDebris:', e.message); }
 
             // === FINAL BOSS INTRO (2026-09): escort caption (small, drawn under UI) ===
             try { drawBossEscortLabel(); } catch(e) { console.error('drawBossEscortLabel:', e.message); }
@@ -9101,6 +10113,12 @@ function drawPlayer() {
 
             // UI (drawn outside the save/restore so it's not affected by shake)
             try { drawUI(); } catch(e) { console.error('drawUI:', e.message); }
+
+            // === FORMATION BONUS BANNER (2026-09) ===
+            // Drawn after drawUI() so it reads on top of the HUD. Lives here
+            // (and not inside drawUI()) so the banner is visible in BOTH the
+            // sprite path (drawUISprite) and the legacy path.
+            try { drawFormationBonusBanner(); } catch(e) { console.error('drawFormationBonusBanner:', e.message); }
 
             // === FINAL BOSS INTRO (2026-09): red siren overlay (full screen) ===
             // Drawn after drawUI so the warning text reads clearly on top of HUD.
