@@ -1139,6 +1139,7 @@ function startGame() {
     hitMarkers = [];
     comboCount = 0;
     comboTimer = 0;
+    savedWeaponLevel.P = 0; savedWeaponLevel.W = 0; savedWeaponLevel.M = 0;   // (v18)
     comboText = '';
     bossHPBarAlpha = 0;
     lastSpawnFrame = 0;
@@ -1898,6 +1899,80 @@ let bonusTimer = 0;
 // Tiered combo bonus scale (replaces the linear `comboCount * 50` of v15).
 // 1 kill gives 0 (no bonus for the first kill — just builds the streak).
 // The chart: 2..4 → 50, 5..9 → 100, 10..19 → 250, 20..29 → 500, 30+ → 1000.
+// === (v18) PER-WEAPON LEVEL MEMORY ==================================
+// Before v18, picking up a different weapon WIPED the level you had built
+// (M set powerLevel = 0, W subtracted a level, P cleared laser+missile).
+// Players learned to dodge items, which is the opposite of what a powerup
+// should feel like. Now each weapon keeps its own level: switching stashes
+// the level you leave and restores the level you return to. Nothing is ever
+// destroyed by touching an item.
+const savedWeaponLevel = { P: 0, W: 0, M: 0 };
+
+function stashCurrentWeaponLevel() {
+    if (player.activeWeapon === 'P') savedWeaponLevel.P = player.powerLevel;
+    else if (player.activeWeapon === 'W') savedWeaponLevel.W = laserLevel;
+    else if (player.activeWeapon === 'M') savedWeaponLevel.M = playerMissileLevel;
+}
+
+// Switch to `to` ('P'|'W'|'M') and restore that weapon's remembered level,
+// then add `gain` levels. Returns true if the weapon was ALREADY at max
+// before the gain (caller turns that into a score/bomb reward).
+function switchWeaponTo(to, gain) {
+    stashCurrentWeaponLevel();
+    player.activeWeapon = to;
+    // tear down the live state of the other two weapons (visuals only —
+    // their levels stay remembered in savedWeaponLevel)
+    if (to !== 'W') { laserBeams = []; stopLaserSound(); laserLevel = 0; }
+    if (to !== 'M') { missiles = []; playerMissileLevel = 0; }
+    if (to !== 'P') { player.powerLevel = 0; }
+
+    let wasMax = false;
+    if (to === 'P') {
+        wasMax = savedWeaponLevel.P >= 6;
+        player.powerLevel = Math.min(6, savedWeaponLevel.P + gain);
+        savedWeaponLevel.P = player.powerLevel;
+    } else if (to === 'W') {
+        wasMax = savedWeaponLevel.W >= LASER_MAX_LEVEL;
+        laserLevel = Math.min(LASER_MAX_LEVEL, savedWeaponLevel.W + gain);
+        savedWeaponLevel.W = laserLevel;
+        laserBeams = [];
+        for (let lb = 0; lb < laserLevel + 1; lb++) laserBeams.push({ tickTimer: 0 });
+    } else if (to === 'M') {
+        wasMax = savedWeaponLevel.M >= 6;
+        playerMissileLevel = Math.min(6, savedWeaponLevel.M + gain);
+        savedWeaponLevel.M = playerMissileLevel;
+    }
+    sparkleFlashActive = true; sparkleFlashTimer = 30;
+    return wasMax;
+}
+
+// Already-maxed pickup is no longer wasted: pays out score + a bomb.
+function maxWeaponReward() {
+    score += 2000;
+    player.bombs = Math.min(5, player.bombs + 1);
+    if (!bonusText || bonusTimer <= 0) { bonusText = 'MAX POWER +2000'; bonusTimer = 45; }
+}
+
+// === (v18) ITEM IDENTITY ============================================
+// Every powerup used to render in the same red (no per-type colour was ever
+// set), so the only way to tell them apart was the badge letter. Colour them
+// so the player can read an item at a glance and decide to take it or not.
+const POWERUP_COLORS = {
+    power:  '#E2402A',   // P — red, main cannon
+    powerW: '#3FA9C9',   // W — cyan, laser (stage 4+)
+    powerM: '#F08A1E',   // M — orange, missiles
+    bomb:   '#2E6FD8',   // B — blue
+    shield: '#35B87A',   // S — green
+    drone:  '#9B5FD0',   // D — purple
+    droneR: '#D0465F',   // R — crimson
+    powerV: '#8C93A0'    // V — steel, invincibility
+};
+// Weapon items rotate between the weapon types while they float, so a player
+// who is happy with their current gun can wait for it to come back around
+// instead of dodging the item entirely.
+const CYCLING_TYPES = ['power', 'powerW', 'powerM'];
+const POWERUP_CYCLE_FRAMES = 48;
+
 function comboBonus(n) {
     if (n >= 30) return 1000;
     if (n >= 20) return 500;
@@ -2149,7 +2224,9 @@ function tryFormationBonus(member) {
     // 8% chance, so push directly; no V here — V stays a boss reward).
     if (!player.vPowerActive) {
         let ftypes = ['power', 'powerW', 'powerM', 'bomb', 'shield', 'drone']; if (currentStage < 4) ftypes = ftypes.filter(function (t) { return t !== 'powerW'; });
-        powerups.push({ x: member.x, y: member.y, width: 24, height: 24, type: ftypes[Math.floor(Math.random() * ftypes.length)], speed: 1.5 });
+        const ft = ftypes[Math.floor(Math.random() * ftypes.length)];
+        powerups.push({ x: member.x, y: member.y, width: 24, height: 24, type: ft, speed: 1.5,
+                        color: POWERUP_COLORS[ft], cycling: CYCLING_TYPES.indexOf(ft) >= 0, cycleTimer: 0 });
     }
     // Show the 1-second bonus banner.
     bonusText = 'FORMATION BONUS +' + (1000 * currentStage);
@@ -2215,7 +2292,11 @@ function spawnPowerup(x, y, isBossKill) {
         width: 24,
         height: 24,
         type: type,
-        speed: 1.5
+        speed: 1.5,
+        // (v18) colour + type cycling for weapon items
+        color: POWERUP_COLORS[type],
+        cycling: CYCLING_TYPES.indexOf(type) >= 0,
+        cycleTimer: 0
     });
 }
 
@@ -2902,6 +2983,7 @@ function respawnPlayer() {
     } else if (player.activeWeapon === 'M') {
         playerMissileLevel = Math.max(0, playerMissileLevel - 1);
     }
+    stashCurrentWeaponLevel();   // (v18) keep the remembered level in sync
     player.bombs = 3;
     player.visible = true;
     player.invincible = true;
@@ -3857,23 +3939,39 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 else if (delta < -MAX_ANGLE_STEP) delta = -MAX_ANGLE_STEP;
                 enemy.angle = cur + delta;
             }
-            // Shooting: every 72 frames (1.2s) fire one aimed bullet.
+            // Shooting. (v18) The column used to be a bullet wall: 6 planes x
+            // one aimed shot every 1.2s, at speed 1.2 — each bullet needed ~10s
+            // to cross the screen, so ~50 aimed bullets could be alive at once
+            // and the player had nowhere to stand. Now: at most 6 column
+            // bullets alive, a longer interval, faster bullets (they clear the
+            // screen instead of stacking), and a small spread so six planes
+            // never converge on the exact same point.
             enemy._pathShootTimer++;
-            if (enemy._pathShootTimer >= 72) {
+            if (enemy._pathShootTimer >= 100) {
                 enemy._pathShootTimer = 0;
-                const pdx = player.x - enemy.x;
-                const pdy = player.y - enemy.y;
-                const pd = Math.sqrt(pdx * pdx + pdy * pdy) + 0.0001;
-                const bSpeed = 1.2;
-                enemyBullets.push({
-                    x: enemy.x,
-                    y: enemy.y + enemy.height / 2,
-                    width: 24,
-                    height: 24,
-                    speed: bSpeed,
-                    vx: (pdx / pd) * bSpeed,
-                    vy: (pdy / pd) * bSpeed
-                });
+                let liveColumnShots = 0;
+                for (let cb = 0; cb < enemyBullets.length; cb++) {
+                    if (enemyBullets[cb] && enemyBullets[cb].fromColumn) liveColumnShots++;
+                }
+                if (liveColumnShots < 6) {
+                    const pdx = player.x - enemy.x;
+                    const pdy = player.y - enemy.y;
+                    const pd = Math.sqrt(pdx * pdx + pdy * pdy) + 0.0001;
+                    const bSpeed = 2.0;
+                    const spread = (Math.random() - 0.5) * 0.34;   // +-~10 degrees
+                    const ca = Math.cos(spread), sa = Math.sin(spread);
+                    const ux = pdx / pd, uy = pdy / pd;
+                    enemyBullets.push({
+                        x: enemy.x,
+                        y: enemy.y + enemy.height / 2,
+                        width: 24,
+                        height: 24,
+                        speed: bSpeed,
+                        vx: (ux * ca - uy * sa) * bSpeed,
+                        vy: (ux * sa + uy * ca) * bSpeed,
+                        fromColumn: true
+                    });
+                }
             }
             // Skip the per-type switch for column enemies — we did all the
             // work above and don't want the default scout branch to add
@@ -4607,6 +4705,18 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
     for (let i = powerups.length - 1; i >= 0; i--) {
         const pu = powerups[i];
         pu.y += pu.speed;
+        // (v18) weapon items rotate their type so the player can choose
+        if (pu.cycling) {
+            pu.cycleTimer = (pu.cycleTimer || 0) + 1;
+            if (pu.cycleTimer >= POWERUP_CYCLE_FRAMES) {
+                pu.cycleTimer = 0;
+                let pool = CYCLING_TYPES;
+                if (currentStage < 4) pool = pool.filter(function (t) { return t !== 'powerW'; });
+                const at = pool.indexOf(pu.type);
+                pu.type = pool[(at + 1) % pool.length];
+                pu.color = POWERUP_COLORS[pu.type];
+            }
+        }
         if (pu.y > GAME_HEIGHT + 20) {
             powerups.splice(i, 1);
         }
@@ -5554,51 +5664,18 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             playPowerupSound();
             switch (pu.type) {
                 case 'power':
-                    player.powerLevel = Math.min(6, player.powerLevel + 1);
-                    sparkleFlashActive = true; sparkleFlashTimer = 30;
-                    player.activeWeapon = 'P';
-                    laserBeams = [];
-                    stopLaserSound();
-                    laserLevel = 0;
-                    // Clear missiles when switching to P bullets
-                    missiles = [];
-                    playerMissileLevel = 0;
+                    // (v18) level memory — see switchWeaponTo()
+                    if (switchWeaponTo('P', 1)) maxWeaponReward();
                     break;
                 case 'powerW':
                     // (v17) Stage-4+ only — defense in depth: if a powerW somehow
                     // arrives on stage < 4, downgrade to a free P level instead.
                     if (currentStage < 4) {
-                        player.powerLevel = Math.min(6, player.powerLevel + 1);
-                        player.activeWeapon = 'P';
-                        laserBeams = [];
-                        stopLaserSound();
-                        laserLevel = 0;
-                        missiles = [];
-                        playerMissileLevel = 0;
-                        sparkleFlashActive = true; sparkleFlashTimer = 30;
+                        if (switchWeaponTo('P', 1)) maxWeaponReward();
                         break;
                     }
-                    // White W - Laser weapon (up to 7 beams, level 0-6)
-                    // Degrade current weapon by 1 level on death
-                    if (player.activeWeapon === 'P') {
-                        player.powerLevel = Math.max(0, player.powerLevel - 1);
-                    } else if (player.activeWeapon === 'W') {
-                        if (laserBeams.length > 0) laserBeams.pop();
-                    } else if (player.activeWeapon === 'M') {
-                        playerMissileLevel = Math.max(0, playerMissileLevel - 1);
-                    }
-                    player.activeWeapon = 'W';
-                    // Clear missiles when switching to W laser
-                    missiles = [];
-                    playerMissileLevel = 0;
-                    laserLevel = Math.min(LASER_MAX_LEVEL, laserLevel + 1);
-                    sparkleFlashActive = true; sparkleFlashTimer = 30;
-                    // Rebuild laser beams array to match level
-                    laserBeams = [];
-                    for (let lb = 0; lb < laserLevel + 1; lb++) {
-                        laserBeams.push({ tickTimer: 0 });
-                        sparkleFlashActive = true; sparkleFlashTimer = 30;
-                    }
+                    // White W - Laser weapon. (v18) level memory, no degrade.
+                    if (switchWeaponTo('W', 1)) maxWeaponReward();
                     playPowerupSound();
                     break;
                 case 'bomb':
@@ -5678,16 +5755,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     }
                     break;
                 case 'powerM':
-                    // Orange M - Missile weapon (up to 7 levels, 0-6)
-                    playerMissileLevel = Math.min(6, playerMissileLevel + 1);
-                    sparkleFlashActive = true; sparkleFlashTimer = 30;
-                    player.activeWeapon = 'M';
-                    // Clear other weapons - M replaces P bullets and W lasers
-                    laserBeams = [];
-                    stopLaserSound();
-                    laserLevel = 0;
-                    player.powerLevel = 0;
-                    missiles = missiles; // keep missiles
+                    // Orange M - Missile weapon. (v18) level memory, no wipe.
+                    if (switchWeaponTo('M', 1)) maxWeaponReward();
                     playPowerupSound();
                     break;
                 case 'powerV':
