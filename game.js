@@ -491,10 +491,20 @@ let lastDefeatedBossWasFinal = false;  // FIX A(2): set at kill sites, read by s
 // guard would absorb lastDefeatedBossWasFinal and return — and hyperspace
 // would never start. Reset in startGame() and at every stage transition.
 let finalBossTransitionDone = false;
+// (v22 FIX) True ONLY at the actual final-boss kill site. Watchdog uses this
+// as the evidence that the boss was killed (vs. bossSpawned leaking to true
+// during the boss intro cinematic or a stage-reset that didn't clear it).
+let finalBossKilled = false;
 // (FIX) Watchdog counter — see watchdog block in update(). Counts consecutive
 // frames where a final boss is "killed" but hyperspace hasn't started. When
 // the counter reaches 180 frames (~3s), force the transition.
 let stageTransitionWatchdogFrames = 0;
+// (v22+) Boss-intro watchdog counter — see boss-intro-watchdog block in update().
+// Counts consecutive frames the final-boss intro cinematic has been stuck in
+// the 'siren' or 'escort' phase without firing spawnFinalBoss(). When it
+// exceeds 600 frames (10s), we force the spawn so the player is never left
+// waiting on wave 15 with no boss.
+let bossIntroWatchdogFrames = 0;
 let bossDeathX = 0, bossDeathY = 0;  // Boss death position for explosion effect
 let midBossStreak = 0;
 
@@ -521,7 +531,7 @@ let currentStage = 1;              // Current macro-stage (was "wave" conceptual
 let stageWave = 1;                 // Sub-wave within current stage (1-12)
 let stageTimer = 0;                // Timer for sub-wave progression
 const STAGE_WAVES = 15;            // 15 sub-waves per stage (then stage boss appears)
-const STAGE_WAVE_DURATION = 1500;  // 25 seconds per sub-wave @ 60fps
+const STAGE_WAVE_DURATION = 1000;  // (v22) ~16.7s per sub-wave @ 60fps. Was 1500 (25s) — too long, players reached boss after 6+ min. Now ~4m10s.
 const HYPERSPACE_TOTAL = 240;      // 4 seconds at 60fps
 const WAVE_FLASH_DURATION = 90;    // Wave announce text fade duration (frames)
 let waveAnnounceTimer = 0;         // Wave announce text countdown
@@ -542,6 +552,14 @@ let deathFlashAlpha = 0;
 let spawnBoost = 0;
 let noSpawnCounter = 0;
 let lastSpawnFrame = 0;
+
+// === FORMATION SPAWN GATE (v19) ===
+// Time-based cap: even if the counter-based schedule would call spawnFormation()
+// many times per second, we won't let formations appear more often than once
+// every FORMATION_MIN_GAP frames (420 = 7s @60fps). Without this, Stage 2+ had
+// > 4 spawns/sec and formations became background noise (~1 formation/sec).
+const FORMATION_MIN_GAP = 420;
+let lastFormationFrame = -9999;
 
 // === SLOW-MOTION SYSTEM (used by final boss death + player death) ===
 let slowMoTimer = 0;            // frames remaining at slowed time scale
@@ -1074,6 +1092,10 @@ function startGame() {
     bossDefeated = false;
     bossActive = false;
     bossSpawned = false;
+    finalBossKilled = false;  // (v22) reset for new game
+    finalBossTransitionDone = false;  // (v22) reset for new game
+    bossIntroPhase = null;  // (v22) clear any stuck intro phase
+    bossPendingPayload = null;  // (v22) drop any deferred boss payload
     bossWaveNumber = 0;
     bossIsFinalBoss = false;  // (2026-09 bugfix) Reset on new game
     finalBossTransitionDone = false;  // (FIX) reset on new game
@@ -1155,7 +1177,6 @@ function startGame() {
     savedWeaponLevel.P = 0; savedWeaponLevel.W = 0; savedWeaponLevel.M = 0;   // (v18)
     comboText = '';
     bossHPBarAlpha = 0;
-    lastSpawnFrame = 0;
     player.activeWeapon = 'P';
     laserLevel = 0;
     pUltimateTimer = 0;
@@ -1168,7 +1189,8 @@ function startGame() {
     mUltimateTimer = 0;
     mUltimateActive = false;
     mUltimateMissile = null;
-    
+    lastFormationFrame = -9999;  // (v19) reset formation time gate on game start
+    lastSpawnFrame = 0;
     startBGM();
     buildGradCache(); // PERF: build cached gradients once at game start
 }
@@ -1537,7 +1559,10 @@ function spawnEnemy() {
     // Boss wave check: boss appears at sub-wave 10 of each stage
     // Also handle case where stageWave overshot due to timer
     // Force new boss spawn - remove any old boss that's still alive
-    if ((stageWave === STAGE_WAVES || stageWave > STAGE_WAVES) && bossWaveNumber < currentStage && !bossActive) {
+    // (v22) also require !bossSpawned — if a previous cycle leaked bossSpawned=true
+    // (e.g. boss was killed but flag didn't reset before the next cycle), this
+    // prevents the new boss from spawning at all.
+    if ((stageWave === STAGE_WAVES || stageWave > STAGE_WAVES) && bossWaveNumber < currentStage && !bossActive && !bossSpawned) {
         // Remove any previous wave boss that's still alive (prevents spawn blocking)
         if (bossActive) {
             for (let ei = enemies.length - 1; ei >= 0; ei--) {
@@ -1731,7 +1756,9 @@ function spawnEnemy() {
     // - right: x = GAME_WIDTH + 50, y = random in upper third
     let startX, startY;
     if (side === 'top') {
-        startX = Math.random() * (GAME_WIDTH - 60) + 30;
+        // (v19) Wider spawn band: was (GAME_WIDTH - 60) + 30 → (GAME_WIDTH - 96) + 48,
+// so bomber half-width (43px) gets the same 5px safety margin scout gets.
+        startX = Math.random() * (GAME_WIDTH - 96) + 48;
         startY = -50;
     } else if (side === 'left') {
         startX = -50;
@@ -1756,6 +1783,10 @@ function spawnEnemy() {
         phase: Math.random() * Math.PI * 2,
         _spawnSide: side,
         _sweep: sweep,
+        // (v19) Tracks whether the plane's full sprite has ever been inside the
+        // playfield. Used by sweep-entry bookkeeping so we don't try to clamp a
+        // wingtip to the screen edge before the plane has actually entered.
+        _enteredScreen: false,
         // _sweepPhase drives the sine-wave horizontal offset during a sweep entry.
         _sweepPhase: Math.random() * Math.PI * 2,
         // _sweepDir: -1 for "coming from left going right", +1 for "coming from right going left".
@@ -1986,6 +2017,34 @@ const POWERUP_COLORS = {
 const CYCLING_TYPES = ['power', 'powerW', 'powerM'];
 const POWERUP_CYCLE_FRAMES = 48;
 
+// (v22 FIX) Single source of truth for inserting a powerup. Replaces every
+// `powerups.push(...)` call site so we have ONE place to enforce the
+// "no powerW before stage 4" rule. Filters at every individual spawn site
+// kept leaking — this is the final defence. The cycling pool already filters
+// powerW out for stage <4, but if anything slips through we substitute 'power'
+// here as the last line of defence, AND log a one-time [leak] for diagnosis.
+var _v22_wLeakLogged = false;
+function addPowerup(x, y, type, opts) {
+    if (currentStage < 4 && type === 'powerW') {
+        if (!_v22_wLeakLogged) {
+            _v22_wLeakLogged = true;
+            try { console.error('[leak] powerW at stage', currentStage, new Error().stack); } catch (_) {}
+        }
+        type = 'power';
+    }
+    var pu = {
+        x: x, y: y,
+        width: 24, height: 24,
+        type: type,
+        speed: (opts && opts.speed != null) ? opts.speed : 1.5,
+        color: POWERUP_COLORS[type],
+        cycling: CYCLING_TYPES.indexOf(type) >= 0,
+        cycleTimer: 0
+    };
+    powerups.push(pu);
+    return pu;
+}
+
 function comboBonus(n) {
     if (n >= 30) return 1000;
     if (n >= 20) return 500;
@@ -1993,6 +2052,21 @@ function comboBonus(n) {
     if (n >= 5) return 100;
     if (n >= 2) return 50;
     return 0;
+}
+
+// (v22 FIX) Single source of truth for a player kill combo step. Previously
+// the 6 kill sites each incremented comboCount + updated comboTimer + called
+// maybeShowComboTierText + set comboText, but only ONE of them (the player-
+// bullet branch around line 3744) updated maxCombo — so the MAX Nx HUD value
+// stayed at 0 for most of a run. This wrapper does ALL of the bookkeeping
+// including maxCombo so future kill sites only have to call this.
+function addComboKill() {
+    comboCount++;
+    score += comboBonus(comboCount);
+    if (comboCount > maxCombo) maxCombo = comboCount;  // (v22) update MAX HUD
+    comboTimer = comboCount >= 10 ? 40 : 50;
+    maybeShowComboTierText(comboCount);
+    if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
 }
 
 // === COMBO TIER ENTRY BANNER (v16) =====================================
@@ -2233,13 +2307,13 @@ function tryFormationBonus(member) {
     if (formationKills[id] !== member.formationSize) return false;
     // All members killed cleanly → award the bonus.
     score += 1000 * currentStage;
-    // Drop a GUARANTEED powerup at the kill position (spawnPowerup rolls an
-    // 8% chance, so push directly; no V here — V stays a boss reward).
-    if (!player.vPowerActive) {
+    // (v19) Item drop is now 50% instead of guaranteed. The score bonus and the
+    // FORMATION BONUS banner still trigger 100% of the time — only the item is
+    // halfrate to stop the screen from filling with powerups every few seconds.
+    if (!player.vPowerActive && Math.random() < 0.5) {
         let ftypes = ['power', 'powerW', 'powerM', 'bomb', 'shield', 'drone']; if (currentStage < 4) ftypes = ftypes.filter(function (t) { return t !== 'powerW'; });
         const ft = ftypes[Math.floor(Math.random() * ftypes.length)];
-        powerups.push({ x: member.x, y: member.y, width: 24, height: 24, type: ft, speed: 1.5,
-                        color: POWERUP_COLORS[ft], cycling: CYCLING_TYPES.indexOf(ft) >= 0, cycleTimer: 0 });
+        addPowerup(member.x, member.y, ft, { speed: 1.5 });
     }
     // Show the 1-second bonus banner.
     bonusText = 'FORMATION BONUS +' + (1000 * currentStage);
@@ -2284,7 +2358,9 @@ function spawnPowerup(x, y, isBossKill) {
     // First 9 waves (before boss): 50% higher item drop rate for better survivability
     // From wave 10 (boss appears): original rate
     // (2026-09) halved: v15 doubled the kill rate, so 8% felt like an item rain.
-    const dropRate = wave < 10 ? 0.04 : 0.028;
+    // (v19) further reduced: formations + guaranteed formation-bonus items
+    // made the screen fill with powerups, so we drop the base rate another ~25%.
+    const dropRate = wave < 10 ? 0.03 : 0.02;
     if (Math.random() > dropRate && !isBossKill) return;
     
     let types;
@@ -2298,19 +2374,9 @@ function spawnPowerup(x, y, isBossKill) {
         types = ['powerV', 'power', 'powerW', 'powerM', 'powerW', 'powerW', 'bomb', 'bomb', 'shield', 'drone', 'droneR']; if (currentStage < 4) types = types.filter(function (t) { return t !== 'powerW'; });
     }
     const type = types[Math.floor(Math.random() * types.length)];
-    
-    powerups.push({
-        x: x,
-        y: y,
-        width: 24,
-        height: 24,
-        type: type,
-        speed: 1.5,
-        // (v18) colour + type cycling for weapon items
-        color: POWERUP_COLORS[type],
-        cycling: CYCLING_TYPES.indexOf(type) >= 0,
-        cycleTimer: 0
-    });
+    // (v22) routed through addPowerup() — single chokepoint for the
+    // "no powerW before stage 4" defence.
+    addPowerup(x, y, type, { speed: 1.5 });
 }
 
 // ====================================================================
@@ -2858,7 +2924,14 @@ function checkCollision(a, b) {
 }
 
 function playerHit() {
+    // (v22) Belt-and-suspenders guard. Callers already check
+    // `!player.invincible` (and sometimes `!vPowerActive`/`!shieldActive`),
+    // but the original symptom was player.lives drifting down even when
+    // the player should be unkillable. Re-check ALL three here so any
+    // future call site that forgets the outer guard can't take a life.
     if (player.invincible) return;
+    if (player.vPowerActive) return;
+    if (player.shieldActive) return;
     if (player.shieldActive) {
         player.shieldActive = false;
         player.shieldTimer = 0;
@@ -3070,20 +3143,35 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         // know their bullets are being deflected — not "the boss is unkillable".
     }
 
-    // (FIX) Stage-transition watchdog. If a final boss has been killed but no
-    // transition has fired within 3 seconds (180 frames), force one. Guards
-    // against the same regression that previously stuck the game at wave 15
-    // with no hyperspace. Should NEVER trip on a healthy build.
+    // (v22 FIX) Stage-transition watchdog.
+    //
+    // The original guard `bossSpawned && stageWave >= STAGE_WAVES && !finalInArr`
+    // was too broad: any time `bossSpawned` leaked to `true` while we were still
+    // on the boss intro cinematic (siren + escorts), the watchdog would fire
+    // within 3s and force a stage transition without a boss fight. The fix:
+    //
+    //   1. require `finalBossKilled === true` — set only at the actual boss
+    //      kill site, never by spawn/intro state;
+    //   2. while boss intro is playing (bossIntroPhase != null) OR the boss
+    //      payload is still pending, reset the counter — the boss is on its
+    //      way, the watchdog must not run;
+    //   3. raise the timeout from 180 to 600 frames (10s) so the dying
+    //      animation has time to complete normally.
     if (bossSpawned === true
         && stageWave >= STAGE_WAVES
         && !enemies.some(e => e && e.isWaveBoss && e.type === 'final')
         && hyperspaceActive === false
-        && gameState === GameState.PLAYING) {
+        && gameState === GameState.PLAYING
+        && finalBossKilled === true
+        && bossActive === false  // (v22+) NEVER force transition while boss is alive
+        && (bossIntroPhase == null)
+        && !(bossPendingPayload && bossPendingPayload.type === 'final')) {
         stageTransitionWatchdogFrames++;
-        if (stageTransitionWatchdogFrames >= 180) {
-            console.warn('[watchdog] stage transition forced');
+        if (stageTransitionWatchdogFrames >= 600) {
+            try { console.warn('[watchdog-fired] stage=' + currentStage + ' wave=' + stageWave + ' bossSpawned=' + bossSpawned + ' fbKilled=' + finalBossKilled + ' fbtd=' + finalBossTransitionDone + ' enemiesFinal=' + enemies.some(function(e){return e && e.type==='final';}) + ' bossIntroPhase=' + bossIntroPhase + ' bossPending=' + (bossPendingPayload && bossPendingPayload.type) + ' new Error().stack'); } catch (_) { console.warn('[watchdog] stage transition forced'); }
             finalBossTransitionDone = false; // ensure legacy path runs cleanly
             triggerStageTransition();
+            finalBossKilled = false;
             stageTransitionWatchdogFrames = 0;
         }
     } else {
@@ -3130,6 +3218,24 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         }
     }
 
+    // (v22+ FIX) Boss-intro watchdog: if the escort phase has been stuck for
+    // >10s (600 frames) without spawnFinalBoss() firing, force the boss in
+    // directly. Without this, a race between updateBossIntro()'s escort timer
+    // and the spawn cadence can leave bossActive=true / bossSpawned=false /
+    // bossIntroPhase='escort' forever, and the player sits on wave 15 with
+    // no boss appearing. Mirrors the stage-transition watchdog above — same
+    // shape, different stuck-state.
+    if (bossActive && bossSpawned === false && bossIntroPhase && bossIntroPhase !== 'spawn') {
+        bossIntroWatchdogFrames = (bossIntroWatchdogFrames || 0) + 1;
+        if (bossIntroWatchdogFrames > 600) {
+            try { console.warn('[boss-intro-watchdog] forcing final boss spawn; phase=' + bossIntroPhase + ' elapsed=' + bossIntroWatchdogFrames + ' escortActive=' + bossEscortActiveCount + ' escortSpawned=' + bossEscortSpawnedCount); } catch (_) {}
+            spawnFinalBoss();
+            bossIntroWatchdogFrames = 0;
+        }
+    } else {
+        bossIntroWatchdogFrames = 0;
+    }
+
     // Stage/Sub-wave progression - hyperspace check FIRST
     if (hyperspaceActive) {
         updateHyperspace();
@@ -3145,6 +3251,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
 
     // HYPERSPACE TRIGGER: Check BEFORE stageWave overflow resets bossDefeated
     if (bossDefeated && !hyperspaceActive && !deathActive) {
+        try { console.warn('[onBossDefeated-call] stage=' + currentStage + ' wave=' + stageWave + ' bossDefeated=' + bossDefeated + ' lastFinal=' + lastDefeatedBossWasFinal + ' fbKilled=' + finalBossKilled + ' fbtd=' + finalBossTransitionDone + ' bossSpawned=' + bossSpawned); } catch (_) {}
         onBossDefeated();
         return; // Skip rest of frame - hyperspace jump started
     }
@@ -3209,9 +3316,21 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             formationSpawnCounter++;
             // Stage 2+: tighter cadence (every 4th). Stage 1: every 6th.
             const formationEvery = (currentStage >= 2) ? 4 : 6;
-            if (formationSpawnCounter >= formationEvery) {
+            // === (v19) TIME GATE: formations are also throttled by an absolute
+            // minimum gap of FORMATION_MIN_GAP frames (7s @60fps) so they don't
+            // overlap into background noise when the spawn cadence is fast.
+            if (formationSpawnCounter >= formationEvery &&
+                (frameCount - lastFormationFrame) >= FORMATION_MIN_GAP) {
                 formationSpawnCounter = 0;
+                lastFormationFrame = frameCount;
                 spawnFormation();
+                lastSpawnFrame = frameCount;
+                noSpawnCounter = 0;
+            } else if (formationSpawnCounter >= formationEvery) {
+                // Counter would have fired but time gate blocked it — DON'T reset
+                // the counter, just fall through to the normal spawn this frame
+                // and try again next spawn tick.
+                spawnEnemy();
                 lastSpawnFrame = frameCount;
                 noSpawnCounter = 0;
             } else {
@@ -3388,6 +3507,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                                 bossActive = false;
                                 if (e.isWaveBoss && e.type === 'final') {
                                     lastDefeatedBossWasFinal = true; // FIX A(2)
+                                    finalBossKilled = true; // (v22) evidence for watchdog
                                     // Final boss destruction: massive explosion effect
                                     bossDeathX = e.x;
                                     bossDeathY = e.y;
@@ -3667,12 +3787,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     if (enemy.hp <= 0 && !enemy.dying) {
                         score += enemy.score;
                         tryFormationBonus(enemy);
-                        comboCount++;
-                        score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
-                        if (comboCount > maxCombo) maxCombo = comboCount;
-                        comboTimer = comboCount >= 10 ? 40 : 50;
-                        maybeShowComboTierText(comboCount);
-                        if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
+                        addComboKill();
                         createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
                             // Boss defeated - spawn V powerup (one-shot reward)
@@ -3680,6 +3795,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                             bossActive = false;
                             if (enemy.isWaveBoss && enemy.type === 'final') {
                                 lastDefeatedBossWasFinal = true; // FIX A(2)
+                                finalBossKilled = true; // (v22) evidence for watchdog
                                 // Final boss destruction: massive explosion effect
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
@@ -3859,9 +3975,15 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             const vx = enemy._sweepDir * (enemy.speed * 0.95) + Math.sin(enemy._sweepPhase) * 0.6;
             enemy.x += vx;
             enemy.y += enemy.speed * 0.85; // slightly slower vertical for a sweeping arc
-            // Once inside the playfield, dampen the inward velocity so the bomber
-            // doesn't fly straight across and exit in a heartbeat.
-            if (enemy.x > 12 && enemy.x < GAME_WIDTH - 12) {
+            // (v19) Use width-based insets instead of hardcoded 12px so wider
+            // bombers (width=86, halfW=43) don't end up pinned to the screen
+            // edge with their wings hanging outside.
+            const _halfW = (enemy.width || 60) / 2;
+            const _inset = _halfW + 6;
+            // Once the FULL sprite is inside the playfield, dampen the inward
+            // velocity so the bomber doesn't fly straight across and exit.
+            if (enemy.x > _inset && enemy.x < GAME_WIDTH - _inset) {
+                enemy._enteredScreen = true;
                 enemy._sweepDir *= 0.96; // ease off the sweep direction
                 // Once the sweep direction has essentially decayed the plane would
                 // otherwise hover mid-screen (only the tiny sine wiggle left).
@@ -3871,6 +3993,15 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     enemy._sweep = false;
                     enemy.angle = 0;
                 }
+            }
+            // (v19) Once fully inside, clamp x so the residual sine wiggle and
+            // any terminal-momentum side drift can't push the plane outside its
+            // own half-width. _pathMode === 'column' reaches this block — but
+            // its movement ALSO pushes x off-screen by design — so we only
+            // clamp for plain sweep entry planes, identified by !_pathMode.
+            if (!enemy._pathMode && enemy._enteredScreen) {
+                const hw = (enemy.width || 60) / 2;
+                enemy.x = Math.max(hw, Math.min(GAME_WIDTH - hw, enemy.x));
             }
             // Optional tilt for visual feedback — angle scales with vx so the plane
             // visibly banks as it sweeps.
@@ -4578,24 +4709,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         createExplosion(px, py, 0.6);
                     }
 
-                    // === Phase C: NO 2nd explosion, NO shockwave, NO fire burst, NO debris. ===
-                    // === The fuselage has already faded out and drifted off-screen via   ===
-                    // === the natural fade-out animation. Just clean up silently.        ===
-                    // (Audio cue kept for game feel — does not cause render lag)
-                    // (FIX) This is the OTHER Phase-C path — the body drifted off-screen /
-                    // hit the time cap before the explicit Phase-C block above ran (e.g.
-                    // body faded so far that the entity ended up removed by the off-screen
-                    // splice inside Phase B). Previously this branch spliced the boss
-                    // entity WITHOUT running triggerStageTransition(), so the legacy
-                    // onBossDefeated() guard then absorbed lastDefeatedBossWasFinal and
-                    // returned — hyperspace never started. Now we run the transition
-                    // here too. finalBossTransitionDone gates onBossDefeated() so the
-                    // legacy path is bypassed cleanly.
+                    // === Phase C cleanup: silent splice when the body drifts off-screen    ===
+                    // === or hits the time cap. NO 2nd explosion, NO shockwave, NO fire. ===
+                    // === For heavyBomber (mid-boss) this is JUST a cleanup splice —     ===
+                    // === we must NOT call triggerStageTransition() here, only the case  ===
+                    // === 'final' block above is allowed to advance the stage. Without  ===
+                    // === the type guard the heavyBomber time-cap path was firing       ===
+                    // === triggerStageTransition() every kill → spurious hyperspace      ===
+                    // === mid-wave (the "wave resets randomly" bug).                     ===
                     if (_offScreen || _onScreenCap || _timeCap) {
                         enemy._dyingFinalDone = true;
-                        if (typeof playExplosionSound === 'function') playExplosionSound();
-                        finalBossTransitionDone = true;
-                        triggerStageTransition();
                         const idx = enemies.indexOf(enemy);
                         if (idx >= 0) enemies.splice(idx, 1);
                     }
@@ -4681,6 +4804,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 bossActive = false;
                 if (enemy.isWaveBoss && enemy.type === 'final') {
                     lastDefeatedBossWasFinal = true; // FIX A(2) — boss off-screen treated as killed
+                    finalBossKilled = true; // (v22) evidence for watchdog
                     bossDeathX = enemy.x;
                     bossDeathY = enemy.y;
                     createHitSpark(enemy.x, enemy.y, 0.6);
@@ -4941,11 +5065,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
                     tryFormationBonus(enemy);
-                    comboCount++;
-                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
-                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16) shorter window; tighter at high combos
-                    maybeShowComboTierText(comboCount);
-                    if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
+                    addComboKill();
                     // Mid-boss: trigger falling sequence instead of immediate splice (one-shot)
                     if (enemy.isMidBoss && enemy.type === 'heavyBomber' && !enemy.dying) {
                         enemy.dying = true;
@@ -4963,6 +5083,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         bossActive = false;
                         if (enemy.isWaveBoss && enemy.type === 'final') {
                             lastDefeatedBossWasFinal = true; // FIX A(2)
+                            finalBossKilled = true; // (v22) evidence for watchdog
                             // === MULTI-STEP CASCADE: small chained pops before big final + slow-mo ===
                             enemy.dying = true;
                             enemy.dyingTimer = 0;
@@ -5070,11 +5191,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                     if (enemy.hp <= 0 && !enemy.dying) {
                         score += enemy.score;
                         tryFormationBonus(enemy);
-                        comboCount++;
-                        score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
-                        comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
-                        maybeShowComboTierText(comboCount);
-                        if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
+                        addComboKill();
                         createExplosion(enemy.x, enemy.y, 0.7);
                         if (enemy.isWaveBoss) {
                             // One-shot reward
@@ -5082,6 +5199,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                             bossActive = false;
                             if (enemy.isWaveBoss && enemy.type === 'final') {
                                 lastDefeatedBossWasFinal = true; // FIX A(2)
+                                finalBossKilled = true; // (v22) evidence for watchdog
                                 // Final boss destruction: massive explosion effect
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
@@ -5241,6 +5359,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                             bossActive = false;
                             if (enemy.isWaveBoss && enemy.type === 'final') {
                                 lastDefeatedBossWasFinal = true; // FIX A(2)
+                                finalBossKilled = true; // (v22) evidence for watchdog
                                 // Final boss destruction: massive explosion effect
                                 bossDeathX = enemy.x;
                                 bossDeathY = enemy.y;
@@ -5424,11 +5543,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
                     tryFormationBonus(enemy);
-                    comboCount++;
-                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
-                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
-                    maybeShowComboTierText(comboCount);
-                    if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
+                    addComboKill();
                     // === IMPACT (2026-09): bumped 0.7 → 1.0 so a missile kill visually
                     // matches the player-bullet branch (both now feed createEnemyDebris).
                     createExplosion(enemy.x, enemy.y, 1.0);
@@ -5438,6 +5553,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         bossActive = false;
                         if (enemy.isWaveBoss && enemy.type === 'final') {
                             lastDefeatedBossWasFinal = true; // FIX A(2)
+                            finalBossKilled = true; // (v22) evidence for watchdog
                             bossDeathX = enemy.x;
                             bossDeathY = enemy.y;
                             createHitSpark(enemy.x, enemy.y, 0.6);
@@ -5533,11 +5649,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
                     tryFormationBonus(enemy);
-                    comboCount++;
-                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
-                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
-                    maybeShowComboTierText(comboCount);
-                    if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
+                    addComboKill();
                     createExplosion(enemy.x, enemy.y, 0.7);
                     // Mid-boss falling sequence (heavyBomber) — guard prevents second kill from short-circuiting
                     if (enemy.isMidBoss && enemy.type === 'heavyBomber' && !enemy.dying) {
@@ -5555,6 +5667,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         bossActive = false;
                         if (enemy.isWaveBoss && enemy.type === 'final') {
                             lastDefeatedBossWasFinal = true; // FIX A(2)
+                            finalBossKilled = true; // (v22) evidence for watchdog
                             enemy.dying = true;
                             enemy.dyingTimer = 0;
                             enemy.dyingCascade = 0;
@@ -5628,11 +5741,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 if (enemy.hp <= 0 && !enemy.dying) {
                     score += enemy.score;
                     tryFormationBonus(enemy);
-                    comboCount++;
-                    score += comboBonus(comboCount);   // (2026-09) combo bonus now really counts
-                    comboTimer = comboCount >= 10 ? 40 : 50; // (v16)
-                    maybeShowComboTierText(comboCount);
-                    if (comboCount >= 5) comboText = comboCount + 'x COMBO!';
+                    addComboKill();
                     if (enemy.isMidBoss && enemy.type === 'heavyBomber') {
                         enemy.dying = true;
                         enemy.dyingTimer = 0;
@@ -5646,6 +5755,7 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                         bossActive = false;
                         if (enemy.isWaveBoss && enemy.type === 'final') {
                             lastDefeatedBossWasFinal = true; // FIX A(2)
+                            finalBossKilled = true; // (v22) evidence for watchdog
                             createExplosion(enemy.x, enemy.y, 0.6);
                             deathFlashAlpha = Math.max(deathFlashAlpha, 0.3);
                             screenShake = 10; screenShakeIntensity = 3;
@@ -6027,6 +6137,17 @@ function createMassiveExplosion(x, y, scale) {
 // boss entity is spliced — the legacy onBossDefeated() guard then sees the
 // new state and falls through, leaving the real hyperspace state intact.
 function triggerStageTransition() {
+    // (v22 DIAG) log every call site so we can see who's actually driving transitions
+    if (typeof window !== 'undefined') {
+        try {
+            console.warn('[transition] stage=' + currentStage + ' wave=' + stageWave +
+                ' bossSpawned=' + bossSpawned +
+                ' finalInArr=' + enemies.some(function(e){return e && e.type === 'final';}) +
+                ' lastFinal=' + lastDefeatedBossWasFinal +
+                ' fbtd=' + finalBossTransitionDone +
+                ' hpActive=' + hyperspaceActive, new Error().stack);
+        } catch (_) {}
+    }
     // Mark "Phase C ran" BEFORE any state changes — this guarantees that
     // if onBossDefeated() runs in the same/next frame (before the splice
     // takes effect), its guard sees the new flag and falls through, leaving
@@ -6053,6 +6174,13 @@ function triggerStageTransition() {
 
 function onBossDefeated() {
     if (bossDefeated) {
+        // (v22+ anti-spam) Reset bossDefeated on entry so this function cannot
+        // re-run its body on the next frame's 3228 trigger while the boss is
+        // still in the "dying" state. Without this, score/combo/effects below
+        // could fire once per frame instead of once per kill, and the legacy
+        // hyperspace branch (above) could spam hyperspaceActive=true every
+        // frame the stale lastDefeatedBossWasFinal was true.
+        bossDefeated = false;
         // (FIX) The old guard `lastDefeatedBossWasFinal && !enemies.some(...'final')`
         // assumed that "the dying boss entity is already spliced" meant "Phase C
         // already ran the transition". That assumption is wrong: the Phase-B
@@ -6118,7 +6246,14 @@ function onBossDefeated() {
         comboCount += 5;
         comboTimer = 180;
         // IMMEDIATELY start hyperspace (no 5-minute freeze)
-        if (lastDefeatedBossWasFinal) {
+        // (v22+ anti-spam) Require finalBossKilled evidence — without it, this
+        // branch was firing whenever lastDefeatedBossWasFinal leaked true across
+        // frames (e.g. mid-boss ram that took a stale path), turning every
+        // stray mid-boss kill into a forced hyperspace. finalBossKilled is
+        // set ONLY at the actual final-boss kill sites, so it's the right
+        // gate for "should we actually advance the stage right now?"
+        if (lastDefeatedBossWasFinal && finalBossKilled) {
+            try { console.warn('[legacy-hyperspace-trigger] stage=' + currentStage + ' wave=' + stageWave + ' lastFinal=' + lastDefeatedBossWasFinal + ' fbKilled=' + finalBossKilled + ' fbtd=' + finalBossTransitionDone + ' bossSpawned=' + bossSpawned); } catch (_) {}
             // Clear all remaining enemies and bullets for clean stage transition
             const remainingEnemies = enemies.filter(e => !e.isWaveBoss);
             for (let rc = 0; rc < remainingEnemies.length; rc++) {
@@ -6133,6 +6268,9 @@ function onBossDefeated() {
             hyperspaceActive = true;
             hyperspaceTimer = HYPERSPACE_TOTAL; // FIX: start at full duration, not 0
             hyperspacePhase = 0;
+            // Consume the evidence flag immediately so this branch can never
+            // re-trigger on the same kill from a subsequent frame.
+            finalBossKilled = false;
         }
         // Reset state
         lastDefeatedBossWasFinal = false; // consumed
@@ -6218,6 +6356,9 @@ function updateHyperspace() {
         // are not mis-identified as final bosses.
         bossIsFinalBoss = false;
         finalBossTransitionDone = false;  // (FIX) reset for next stage's boss
+        finalBossKilled = false;  // (v22) reset for next stage's boss
+        bossIntroPhase = null;  // (v22) clear stuck intro phase so next boss spawns fresh
+        bossPendingPayload = null;  // (v22) drop any deferred payload
         bossClawCount = currentStage + 1;
 
         // Next planet theme
