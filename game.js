@@ -1538,8 +1538,14 @@ function playerShoot() {
                 angle: (i - 0.5) * 0.07, power: bulletPower
             });
         }
-    } else {
-        // Level 7 (pw >= 6): 7-bullet fan spread
+    }
+    // === (v23) P LEVELS 6..10 (was: 6 was the static "7-bullet fan") ===
+    // Levels 0..5 are untouched above. Levels 6..10 each have a distinct pattern
+    // so the player feels a visible step every P pickup. The level-10 ultimate
+    // (shield pulse) is gated by POWER_MAX_LEVEL elsewhere — these branches only
+    // shape the bullet pattern.
+    else if (pw === 6) {
+        // Level 6: classic 7-bullet fan (unchanged)
         for (let i = -3; i <= 3; i++) {
             playerBullets.push({
                 x: player.x + i * 11, y: player.y - 20,
@@ -1547,6 +1553,90 @@ function playerShoot() {
                 angle: i * 0.08, power: bulletPower
             });
         }
+    }
+    else if (pw === 7) {
+        // Level 7: 7-bullet fan + 1 rear-guard bullet (NEW defensive coverage)
+        for (let i = -3; i <= 3; i++) {
+            playerBullets.push({
+                x: player.x + i * 11, y: player.y - 20,
+                width: bulletW + 2, height: bulletH + 4, speed: BULLET_SPEED + 4,
+                angle: i * 0.08, power: bulletPower
+            });
+        }
+        // rear guard — straight down, keeps rammers honest
+        playerBullets.push({
+            x: player.x, y: player.y + 18,
+            width: bulletW, height: bulletH,
+            speed: 3.5, angle: Math.PI / 2, power: bulletPower * 0.6
+        });
+    }
+    else if (pw === 8) {
+        // Level 8: 9-bullet wider fan, the centre bullet is PIERCING (貫通)
+        for (let i = -4; i <= 4; i++) {
+            playerBullets.push({
+                x: player.x + i * 10, y: player.y - 22,
+                width: bulletW + 2, height: bulletH + 4,
+                speed: BULLET_SPEED + 5,
+                angle: i * 0.07, power: bulletPower,
+                piercing: (i === 0) ? true : undefined
+            });
+        }
+    }
+    else if (pw === 9) {
+        // Level 9: 9-bullet fan + two light homing flankers (tiny bit of M)
+        for (let i = -4; i <= 4; i++) {
+            playerBullets.push({
+                x: player.x + i * 10, y: player.y - 22,
+                width: bulletW + 2, height: bulletH + 4,
+                speed: BULLET_SPEED + 5,
+                angle: i * 0.07, power: bulletPower
+            });
+        }
+        // === (v23) Homing flankers use isHoming:true (matches updatePlayerBullets) ===
+        playerBullets.push({
+            x: player.x - 26, y: player.y - 8,
+            width: bulletW, height: bulletH,
+            speed: 4.0, isHoming: true, homingLife: 90,
+            homingTurnRate: 0.10, vx: 0, vy: -bulletPower,
+            power: bulletPower * 0.7
+        });
+        playerBullets.push({
+            x: player.x + 26, y: player.y - 8,
+            width: bulletW, height: bulletH,
+            speed: 4.0, isHoming: true, homingLife: 90,
+            homingTurnRate: 0.10, vx: 0, vy: -bulletPower,
+            power: bulletPower * 0.7
+        });
+    }
+    else if (pw >= POWER_MAX_LEVEL) {
+        // Level 10: 9-bullet fan + 2 homing flankers + 1 rear guard (everything)
+        for (let i = -4; i <= 4; i++) {
+            playerBullets.push({
+                x: player.x + i * 10, y: player.y - 22,
+                width: bulletW + 2, height: bulletH + 4,
+                speed: BULLET_SPEED + 5,
+                angle: i * 0.07, power: bulletPower
+            });
+        }
+        playerBullets.push({
+            x: player.x - 26, y: player.y - 8,
+            width: bulletW, height: bulletH,
+            speed: 4.0, isHoming: true, homingLife: 90,
+            homingTurnRate: 0.10, vx: 0, vy: -bulletPower,
+            power: bulletPower * 0.7
+        });
+        playerBullets.push({
+            x: player.x + 26, y: player.y - 8,
+            width: bulletW, height: bulletH,
+            speed: 4.0, isHoming: true, homingLife: 90,
+            homingTurnRate: 0.10, vx: 0, vy: -bulletPower,
+            power: bulletPower * 0.7
+        });
+        playerBullets.push({
+            x: player.x, y: player.y + 18,
+            width: bulletW, height: bulletH,
+            speed: 3.5, angle: Math.PI / 2, power: bulletPower * 0.6
+        });
     }
 }
 
@@ -1610,6 +1700,12 @@ function spawnEnemy() {
         
         // Boss payload is staged — it is created only when the escort clears.
         // We hold the stats here so spawnFinalBoss() can build the entity later.
+        // (2026-09) spriteVariant: cycles the boss's visual design every 2 stages
+        // (stage 1-2 = variant 0 "boss_heavy", 3-4 = variant 1 "black death",
+        // 5-6 = variant 2 "crimson reaper", 7-8 = variant 0 again, ...). Decided
+        // once at spawn time and stored on the entity so it can't change mid-fight
+        // even if currentStage advances while the boss is still dying.
+        const _bossSpriteVariant = Math.floor((bossNumber - 1) / 2) % 3;
         bossPendingPayload = {
             x: GAME_WIDTH / 2,
             y: -120,
@@ -1617,6 +1713,7 @@ function spawnEnemy() {
             width: 340,
             height: 96,
             type: 'final',
+            spriteVariant: _bossSpriteVariant,
             hp: bossHP,
             maxHp: bossHP,
             speed: ENEMY_BASE_SPEED * 0.25,
@@ -1672,8 +1769,32 @@ function spawnEnemy() {
             types.push('heavyBomber');
         }
     }
-    
+
     let type = types[Math.floor(Math.random() * types.length)];
+
+    // === v23 STAGE-SCALED TIER ROLL ===
+    // Stage 3+ may roll tier 2, stage 6+ may also roll tier 3. Mooks only (NOT mid-bosses
+    // or final boss). Probabilities tuned so that by stage 8 a clear majority of mooks are
+    // upgraded and the player feels the screen "filling up" again after the v15 formula
+    // saturated at stage ~5. (See implementation_report for v23.)
+    let enemyTier = 1;
+    if (type !== 'heavyBomber' && type !== 'final' && type !== 'boss' && type !== 'waveBoss' && type !== 'wave_boss') {
+        const r = Math.random();
+        // tier 3 unlocked at stage 6+: 0..t3Pct → tier 3
+        // tier 2 unlocked at stage 3+: t3Pct..t3Pct+t2Pct → tier 2
+        // else → tier 1
+        let t3Pct = 0, t2Pct = 0;
+        if (currentStage >= 6) { t3Pct = 0.10 + (currentStage - 6) * 0.04; }
+        if (currentStage >= 3) { t2Pct = 0.15 + (currentStage - 3) * 0.06; }
+        // cap so total never exceeds 0.55 (still want a fair share of tier 1 at high stages)
+        t3Pct = Math.min(0.18, t3Pct);
+        t2Pct = Math.min(0.40, t2Pct);
+        if (r < t3Pct) enemyTier = 3;
+        else if (r < t3Pct + t2Pct) enemyTier = 2;
+        // Stage 8+ sanity: if nothing rolled, force tier 2 with 30% chance so the
+        // "stage 8 looks like stage 5" problem is impossible.
+        if (enemyTier === 1 && currentStage >= 8 && Math.random() < 0.30) enemyTier = 2;
+    }
     
     // Limit consecutive mid-boss spawns to 5 before forcing a break
     if (type === 'heavyBomber') {
@@ -1774,6 +1895,7 @@ function spawnEnemy() {
         width: 40,
         height: 40,
         type: type,
+        tier: enemyTier,  // v23: stage-scaled variant tier (1/2/3)
         hp: 1,
         maxHp: 1,
         speed: ENEMY_BASE_SPEED,
@@ -1781,6 +1903,9 @@ function spawnEnemy() {
         shootCooldown: Math.random() * 60 + 30,
         angle: 0,
         phase: Math.random() * Math.PI * 2,
+        // v23: tier3 telegraph — flash hot for ~12f before each shot, so the player
+        // can read the dangerous shot coming and react.
+        _telegraphTimer: 0,
         _spawnSide: side,
         _sweep: sweep,
         // (v19) Tracks whether the plane's full sprite has ever been inside the
@@ -1910,6 +2035,29 @@ function spawnEnemy() {
             enemy.shootCooldown = 9999;
             break;
     }
+
+    // === v23 STAGE-SCALED TIER STATS ===
+    // tier 2 (stage 3+): HP ×1.4, speed ×1.15, slight size bump (×1.08)
+    // tier 3 (stage 6+): HP ×1.8, speed ×1.30, 2-way spread shot, size bump (×1.15),
+    //                     telegraph flash for ~12f before each shot.
+    // tier 3 also gains +50 score (small but makes the high-tier kills pop).
+    if (enemyTier === 2) {
+        enemy.hp = Math.round(enemy.hp * 1.4);
+        enemy.maxHp = enemy.hp;
+        enemy.speed *= 1.15;
+        enemy.score += 30;
+        enemy.width = Math.round(enemy.width * 1.08);
+        enemy.height = Math.round(enemy.height * 1.08);
+    } else if (enemyTier === 3) {
+        enemy.hp = Math.round(enemy.hp * 1.8);
+        enemy.maxHp = enemy.hp;
+        enemy.speed *= 1.30;
+        enemy.score += 80;
+        enemy.width = Math.round(enemy.width * 1.15);
+        enemy.height = Math.round(enemy.height * 1.15);
+        // tier3 fires a 2-way spread instead of a single bullet
+        enemy._tier3Spread = true;
+    }
     
     enemy._id = 'enemy_' + frameCount + '_' + Math.random();
     enemies.push(enemy);
@@ -1952,6 +2100,14 @@ let bonusTimer = 0;
 // destroyed by touching an item.
 const savedWeaponLevel = { P: 0, W: 0, M: 0 };
 
+// === (v23) P WEAPON LEVEL CAP = 10 ===================================
+// Was 6 (7 steps incl. level 0). Raised to 10 so P has an actual endgame
+// progression path now that M has been nerfed. Stages 0..5 keep the old
+// behaviour; stages 6..9 introduce fresh patterns (rear shot, piercing
+// center, homing flanks, tightened ultimate). See playerShoot() and the
+// powerPulse ultimate trigger (>= 9) below.
+const POWER_MAX_LEVEL = 10;
+
 function stashCurrentWeaponLevel() {
     if (player.activeWeapon === 'P') savedWeaponLevel.P = player.powerLevel;
     else if (player.activeWeapon === 'W') savedWeaponLevel.W = laserLevel;
@@ -1972,8 +2128,9 @@ function switchWeaponTo(to, gain) {
 
     let wasMax = false;
     if (to === 'P') {
-        wasMax = savedWeaponLevel.P >= 6;
-        player.powerLevel = Math.min(6, savedWeaponLevel.P + gain);
+        // === (v23) P cap raised 6 → 10 ===
+        wasMax = savedWeaponLevel.P >= POWER_MAX_LEVEL;
+        player.powerLevel = Math.min(POWER_MAX_LEVEL, savedWeaponLevel.P + gain);
         savedWeaponLevel.P = player.powerLevel;
     } else if (to === 'W') {
         wasMax = savedWeaponLevel.W >= LASER_MAX_LEVEL;
@@ -3302,7 +3459,13 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         // at wave 1-3 (≈68f / ≈1.1s per spawn).
         // New formula: keeps the hard floor (12f) but starts at 46f and drops
         // roughly twice as fast, so stages 1-3 actually feel populated.
-        const spawnRate = Math.max(12, 48 - currentStage * 5 - stageWave * 2);
+        // === (v23) Lower floor at stage 8+ ===
+        // The 12f floor was hitting by stage ~5 and the screen stayed at the same
+        // density for the rest of the run. Drop the floor to 9f from stage 8+
+        // so the late-game feels meaningfully denser. Player hitbox stays at
+        // 14×18 — there's still plenty of room to dodge.
+        const spawnFloor = (currentStage >= 8) ? 9 : 12;
+        const spawnRate = Math.max(spawnFloor, 48 - currentStage * 5 - stageWave * 2);
         if (frameCount % spawnRate === 0) {
             // === (2026-09) DENSITY GUARD ===
             // If the on-screen mook count drops below 4, fire one EXTRA spawn
@@ -3337,8 +3500,13 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 spawnEnemy();
                 lastSpawnFrame = frameCount;
                 noSpawnCounter = 0;
+                // === (v23) Stage-scaled mook cap ===
+                // Old hard cap of 30 hit by stage 4-5 and never grew. Add
+                // +Math.floor(currentStage / 3) so the cap keeps pace with the
+                // stage: stage 5 → 31, stage 8 → 32, stage 11 → 33, stage 14 → 34.
+                const mookCap = 30 + Math.floor(currentStage / 3);
                 const liveCount = countMooks();
-                if (liveCount < 4 && enemies.length < 30 && !bossActive) {
+                if (liveCount < 4 && enemies.length < mookCap && !bossActive) {
                     spawnEnemy();
                 }
             }
@@ -3353,7 +3521,9 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
     // New:     Math.max(40, 90 - wave * 2) — tighter ceiling + lower floor so
     // the gap shrinks sooner and the screen fills more reliably.
     const maxGap = Math.max(40, 90 - wave * 2);
-    if (noSpawnCounter > maxGap && enemies.length < 30 && !deathActive && gameState === GameState.PLAYING) {
+    // === (v23) Stage-scaled mook cap (same formula as the density-guard above) ===
+    const mookCapSafety = 30 + Math.floor(currentStage / 3);
+    if (noSpawnCounter > maxGap && enemies.length < mookCapSafety && !deathActive && gameState === GameState.PLAYING) {
         spawnEnemy();
         lastSpawnFrame = frameCount;
         noSpawnCounter = 0;
@@ -3466,11 +3636,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         }
     }
     
-    // === P ULTIMATE: Level 7 shield pulse (3s cooldown) ===
-    if (player.activeWeapon === 'P' && player.powerLevel >= 6) {
+    // === P ULTIMATE: shield pulse ===
+// (v23) Moved from level 6 to POWER_MAX_LEVEL (10) — the ultimate is now the
+// level-10 capstone, not a level-7 default. Cooldown shortened 180 → 150
+// (3.0s → 2.5s) and radii widened 150/75 → 180/95 so the late-game P feels
+// meaningfully stronger than v22, but NOT auto-everywhere the way the old
+// level-6 trigger was.
+    if (player.activeWeapon === 'P' && player.powerLevel >= POWER_MAX_LEVEL) {
         if (!pUltimateActive) {
             pUltimateTimer++;
-            if (pUltimateTimer >= 180) {
+            if (pUltimateTimer >= 150) {
                 // Activate shield pulse
                 pUltimateActive = true;
                 pUltimateAlpha = 1.0;
@@ -3478,22 +3653,22 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 sparkleFlashActive = true;
                 sparkleFlashTimer = 30;
                 pUltimateTimer = 0;
-                // Destroy all enemy bullets within radius
+                // Destroy all enemy bullets within radius (widened 150 → 180)
                 for (let bi = enemyBullets.length - 1; bi >= 0; bi--) {
                     const b = enemyBullets[bi];
                     const dx = player.x - b.x;
                     const dy = player.y - b.y;
-                    if (Math.sqrt(dx * dx + dy * dy) < 150) {
+                    if (Math.sqrt(dx * dx + dy * dy) < 180) {
                         enemyBullets.splice(bi, 1);
                     }
                 }
-                // Damage all enemies within radius
+                // Damage all enemies within radius (widened 75 → 95)
                 for (let ei = enemies.length - 1; ei >= 0; ei--) {
                     const e = enemies[ei];
                     const dx = player.x - e.x;
                     const dy = player.y - e.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < 75) {
+                    if (dist < 95) {
                         // === (2026-09) Final-boss entry invulnerability — see spawnFinalBoss() ===
                         if (e.entryInvuln && e.entryInvuln > 0) continue;
                         e.hp -= 3;
@@ -3884,6 +4059,41 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         const bullet = playerBullets[i];
         // === SLOW-MO: skip bullet motion for slowed frames ===
         if (slowMoActive && Math.random() > timeScale) {
+            continue;
+        }
+        // === (v23) P LEVEL 9/10 HOMING FLANKER SUPPORT ===
+        // Two light homing bullets per shot — short-lived, low turn rate, only
+        // chase mooks (never mid/final bosses). See playerShoot() levels 9/10.
+        if (bullet.isHoming && bullet.homingLife > 0) {
+            bullet.homingLife--;
+            // Find nearest non-mid-boss enemy to chase (playerBullets must NEVER
+            // auto-kill heavy bombers or final bosses — that's M's job)
+            let nearest = null, nd = Infinity;
+            for (let ei = 0; ei < enemies.length; ei++) {
+                const e = enemies[ei];
+                if (!e || e.dying) continue;
+                if (e.isMidBoss || e.isHeavyBomber || e.isWaveBoss || e.type === 'final' || e.type === 'boss' || e.type === 'waveBoss' || e.type === 'wave_boss') continue;
+                const dx = e.x - bullet.x, dy = e.y - bullet.y;
+                const dd = dx * dx + dy * dy;
+                if (dd < nd) { nd = dd; nearest = e; }
+            }
+            if (nearest) {
+                const dx = nearest.x - bullet.x, dy = nearest.y - bullet.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+                const turnRate = bullet.homingTurnRate || 0.10;
+                const dvx = (dx / dist) * bullet.speed - bullet.vx;
+                const dvy = (dy / dist) * bullet.speed - bullet.vy;
+                bullet.vx += dvx * turnRate;
+                bullet.vy += dvy * turnRate;
+                bullet.x += bullet.vx;
+                bullet.y += bullet.vy;
+            } else {
+                bullet.y -= bullet.speed;
+                if (bullet.angle) bullet.x += Math.sin(bullet.angle) * bullet.speed;
+            }
+            if (bullet.homingLife <= 0 || bullet.y < -20 || bullet.y > GAME_HEIGHT + 20) {
+                playerBullets.splice(i, 1);
+            }
             continue;
         }
         bullet.y -= bullet.speed;
@@ -4781,15 +4991,42 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         // Enemy shooting (basic)
         if (enemy.type !== 'bomber' && enemy.type !== 'heavyBomber' && enemy.y > 50) {
             enemy.shootCooldown--;
+            // === v23: tier3 telegraph — start flashing 12f before the next shot ===
+            if (enemy._telegraphTimer && enemy._telegraphTimer > 0) {
+                enemy._telegraphTimer--;
+                enemy.hitFlash = 0.85; // hot white-red blink, see drawEnemy / drawEnemySprite
+                enemy.shootCooldown = Math.max(enemy.shootCooldown, 0);
+            }
             if (enemy.shootCooldown <= 0 && Math.random() < 0.02 * wave) {
-                enemyBullets.push({
-                    x: enemy.x,
-                    y: enemy.y + enemy.height / 2,
-                    width: 24,
-                    height: 24,
-                    speed: 2.30 + currentStage * 0.30 // +60% from 1.44+stage*0.19 (was 0.9+stage*0.12)
-                });
+                if (enemy._tier3Spread) {
+                    // v23 tier3: 2-way spread (±18°) — wider threat cone.
+                    enemyBullets.push({
+                        x: enemy.x - 6, y: enemy.y + enemy.height / 2,
+                        width: 24, height: 24,
+                        speed: 2.30 + currentStage * 0.30,
+                        angle: -0.32
+                    });
+                    enemyBullets.push({
+                        x: enemy.x + 6, y: enemy.y + enemy.height / 2,
+                        width: 24, height: 24,
+                        speed: 2.30 + currentStage * 0.30,
+                        angle: 0.32
+                    });
+                } else {
+                    enemyBullets.push({
+                        x: enemy.x,
+                        y: enemy.y + enemy.height / 2,
+                        width: 24,
+                        height: 24,
+                        speed: 2.30 + currentStage * 0.30 // +60% from 1.44+stage*0.19 (was 0.9+stage*0.12)
+                    });
+                }
                 enemy.shootCooldown = (wave >= 20) ? 130 : 90;
+                // queue the next telegraph 12f before the next shot
+                if (enemy._tier3Spread) enemy._telegraphTimer = 12;
+            } else if (enemy._tier3Spread && enemy.shootCooldown > 0 && enemy.shootCooldown <= 12 && !enemy._telegraphTimer) {
+                // first time we cross the 12f mark, kick off the telegraph
+                enemy._telegraphTimer = 12;
             }
         }
         
@@ -5266,9 +5503,14 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
     
     // === M MISSILE SHOOTING (7 levels, 0-6) ===
     if (playerMissileLevel >= 1 && missileCooldown <= 0) {
-        // Level 6 (ultimate): faster fire rate, smaller missiles
+        // Level 6 (ultimate): faster fire rate
+        // === (v23) SIZE LOCKED ===
+        // Per user request: missiles never grow with playerMissileLevel. Level 6
+        // fires the same visual size as level 1; only the COUNT and FIRE RATE
+        // scale up. This stops the late-game from feeling "bulletproof" — the
+        // player's dodge reads the same missile footprint at every level.
         missileCooldown = (playerMissileLevel >= 6) ? 55 : 90;
-        const mSize = (playerMissileLevel >= 6) ? 1.0 : 0.5; // Bigger at level 7, small at 1-6
+        const mSize = 0.5; // FIXED — never grows with level
         const mW = Math.floor(12 * mSize);
         const mH = Math.floor(27 * mSize);
         const mSpd = (playerMissileLevel >= 6) ? -5.5 : -4.5;
@@ -5302,7 +5544,8 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
     // Defensive rear missile (level 5+)
     if (playerMissileLevel >= 5 && missileDefenseCooldown <= 0) {
         missileDefenseCooldown = 120;
-        const mSize = (playerMissileLevel >= 6) ? 1.0 : 0.5;
+        // === (v23) SIZE LOCKED — defensive missile stays at level-1 size ===
+        const mSize = 0.5;
         const mW = Math.floor(12 * mSize);
         const mH = Math.floor(27 * mSize);
         missiles.push({ x: player.x, y: player.y + 15, vy: 3, vx: 0, homing: false, defensive: true, w: mW, h: mH, isUltimate: false });
@@ -5312,12 +5555,16 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
     if (playerMissileLevel >= 5 && mUltimateTimer <= 0) {
         mUltimateTimer = 300; // 5 seconds
         mUltimateActive = true;
+        // === (v23) ULTIMATE SIZE LOCKED ===
+        // Per user request: ultimate missile footprint is the same at every
+        // missile level (uses level-5 size, since that's when the ultimate
+        // unlocks). Player never gets a bigger ultimate just by leveling M.
         mUltimateMissile = {
             x: player.x,
             y: player.y - 30,
             vy: -1.8, // slow ascent
             vx: 0,
-            w: (playerMissileLevel >= 6) ? 16 : 8, h: (playerMissileLevel >= 6) ? 36 : 18, // big at level 6, small at level 5
+            w: 8, h: 18, // FIXED at level-5 size
             life: 300,
             exploded: false
         };
@@ -5438,21 +5685,12 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
         m.x += m.vx;
         m.y += m.vy;
         
-        // M Level 5+: Missiles can destroy enemy bullets (bullet defense)
-        if (!m.defensive && playerMissileLevel >= 4) {
-            let hitBullet = false;
-            for (let bi = enemyBullets.length - 1; bi >= 0; bi--) {
-                const b = enemyBullets[bi];
-                const dx = m.x - b.x, dy = m.y - b.y;
-                if (Math.sqrt(dx * dx + dy * dy) < 22) {
-                    enemyBullets.splice(bi, 1);
-                    hitBullet = true;
-                }
-            }
-            if (hitBullet) {
-                // Missile survives bullet destruction (strong defense)
-            }
-        }
+        // (v23) Attack missiles no longer destroy enemy bullets. Previously,
+// !m.defensive && playerMissileLevel >= 4 made every flying offensive missile
+// sweep a 22px radius around itself — with 6+ missiles on screen at all
+// times the player became effectively untouchable. Now ONLY the dedicated
+// rear-facing defensive missile can block bullets. The "missile survives
+// bullet destruction" line below is the placeholder for future behavior.
         
         // Remove if off screen
         if (m.y < -30 || m.y > GAME_HEIGHT + 30 || m.x < -30 || m.x > GAME_WIDTH + 30) {
@@ -5460,18 +5698,22 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
             continue;
         }
         
-        // Defensive missile: destroy enemy bullets on contact + splash
+        // Defensive missile: destroy enemy bullets on contact + small splash
+        // (v23) Splash tightened from 110px to 18px — was a wide-area "no fly
+        // zone" that trivialised bullet hell. Now a single rear missile pops
+        // one bullet + anything within 18px, fires every 2s. That's the entire
+        // defensive toolkit.
         if (m.defensive) {
             let hitBullet = false;
             for (let bi = enemyBullets.length - 1; bi >= 0; bi--) {
                 const b = enemyBullets[bi];
                 const dx = m.x - b.x, dy = m.y - b.y;
-                if (Math.sqrt(dx * dx + dy * dy) < 25) {
-                    // Splash: destroy nearby bullets too
+                if (Math.sqrt(dx * dx + dy * dy) < 18) {
+                    // Splash: destroy nearby bullets too (18px, was 110)
                     for (let bj = enemyBullets.length - 1; bj >= 0; bj--) {
                         const b2 = enemyBullets[bj];
                         const d2 = Math.hypot(m.x - b2.x, m.y - b2.y);
-                        if (d2 < 110) { // wider defensive splash
+                        if (d2 < 18) { // tightened defensive splash
                             enemyBullets.splice(bj, 1);
                         }
                     }
@@ -5643,7 +5885,20 @@ const entityCount = enemies.length + enemyBullets.length + playerBullets.length 
                 enemy.hp -= bulletDmg;
                 enemy.hitFlash = 1;
                 createHitSpark(enemy.x + (Math.random() - 0.5) * enemy.width * 0.5, enemy.y + (Math.random() - 0.5) * enemy.height * 0.5);
-                playerBullets.splice(bi, 1);
+                // === (v23) PIERCING BULLET (level 8 centre bullet) ===
+                // Piercing bullets keep flying after the hit — they skip the
+                // splice and the break, so the for-loop above continues to scan
+                // the next enemy on this same frame. Cap piercing lifetime at 3
+                // hits to prevent infinite line-clears against dense formations.
+                if (bullet.piercing) {
+                    bullet.pierceHits = (bullet.pierceHits || 0) + 1;
+                    if (bullet.pierceHits >= 3) {
+                        playerBullets.splice(bi, 1);
+                    }
+                    // do NOT break — let the outer for-loop continue
+                } else {
+                    playerBullets.splice(bi, 1);
+                }
 
 
                 if (enemy.hp <= 0 && !enemy.dying) {
@@ -6856,7 +7111,11 @@ function drawEnemySprite(e) {
         ctx.fillStyle = VIS.grads.aura;
         ctx.beginPath(); ctx.arc(0, 0, 200, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
-        const name = e.dying ? 'boss_body' : 'boss_heavy';
+        // (2026-09) Stage-cycled boss art: spriteVariant is decided once at
+        // spawn time (see bossPendingPayload) and never re-read from
+        // currentStage here, so the design can't flicker mid-fight.
+        const _variantSuffix = (e.spriteVariant === 1) ? '2' : (e.spriteVariant === 2) ? '3' : '';
+        const name = (e.dying ? 'boss_body' : 'boss_heavy') + _variantSuffix;
         // long-bomber silhouette: keep the 340px wingspan, squash height so the
         // body stays on screen at the boss's hover altitude
         ctx.save();
@@ -10076,12 +10335,15 @@ function drawPlayer() {
             ctx.restore();
         }
 
-        // Power level indicator
+        // Power level indicator (legacy draw path)
+        // (v23) Cap visualised at POWER_MAX_LEVEL (10) — when maxed, show "MAX"
+        // so the player knows there's no further P pickup to grab.
         if (player.powerLevel > 0) {
             ctx.fillStyle = '#FFD700';
             ctx.font = '10px monospace';
             ctx.textAlign = 'left';
-            ctx.fillText('PWR ' + player.powerLevel, 10, 70);
+            const label = player.powerLevel >= POWER_MAX_LEVEL ? 'PWR MAX' : ('PWR ' + player.powerLevel);
+            ctx.fillText(label, 10, 70);
         }
 
         // (scorePopups dead code removed — was causing ReferenceError every frame)
@@ -10114,6 +10376,37 @@ function drawPlayer() {
         ctx.font = '12px monospace';
         ctx.fillText('ARROWS / WASD: MOVE', GAME_WIDTH / 2, 480);
         ctx.fillText('SPACE: AUTO-FIRE  |  B: BOMB  |  P: PAUSE', GAME_WIDTH / 2, 500);
+
+        // Share URL (set via window.GAME_URL in index.html — leave blank to show setup hint)
+        ctx.save();
+        ctx.textAlign = 'center';
+        if (typeof GAME_URL !== 'undefined' && GAME_URL) {
+            // URL is set — show the shareable link
+            ctx.fillStyle = '#888';
+            ctx.font = '9px monospace';
+            ctx.fillText('SHARE THIS GAME:', GAME_WIDTH / 2, 555);
+            ctx.fillStyle = '#FFD400';
+            ctx.font = 'bold 11px monospace';
+            ctx.fillText(GAME_URL, GAME_WIDTH / 2, 575);
+            const blink = 0.5 + 0.5 * Math.sin(frameCount * 0.08);
+            ctx.fillStyle = 'rgba(180, 180, 180, ' + blink + ')';
+            ctx.font = '8px monospace';
+            ctx.fillText('(send this URL to your friends!)', GAME_WIDTH / 2, 592);
+        } else {
+            // URL not set — show setup hint so the owner knows where to paste it
+            ctx.fillStyle = '#888';
+            ctx.font = '9px monospace';
+            ctx.fillText('친구에게 공유하기', GAME_WIDTH / 2, 555);
+            const blink = 0.5 + 0.5 * Math.sin(frameCount * 0.08);
+            ctx.fillStyle = 'rgba(255, 212, 0, ' + (0.5 + blink * 0.5) + ')';
+            ctx.font = 'bold 9px monospace';
+            ctx.fillText("index.html 상단 'var GAME_URL = ...' 에", GAME_WIDTH / 2, 575);
+            ctx.fillStyle = 'rgba(255, 212, 0, ' + (0.5 + blink * 0.5) + ')';
+            ctx.font = '8px monospace';
+            ctx.fillText('받은 주소를 한 줄만 붙여넣으면 타이틀에 자동 표시됩니다', GAME_WIDTH / 2, 592);
+        }
+        ctx.restore();
+
         ctx.restore();
 
         // Show player ship in title

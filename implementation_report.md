@@ -122,3 +122,133 @@ spawnEnemy 함수에 `if (bossActive && bossIntroPhase && bossIntroPhase !== 'sp
 | 호위체 이동 | 사인파 스웨이 + 하강 |
 | 보스 날개 끝 | 둥근 long-bombing 윙 (quadraticCurveTo) |
 | 보스 데미지 영역 | hitboxBody(몸통) + hitboxTail(꼬리)만 |
+
+---
+
+# Implementation Report - SVG 스프라이트 오버레이 시스템 (덧씌우기)
+
+## Date
+2026-09-02
+
+## Summary
+게임 로직(스폰·충돌·히트박스·점수·보스 패턴)은 한 줄도 바꾸지 않고,
+그리기만 SVG 스프라이트로 교체하는 오버레이 시스템을 구축했습니다.
+방식은 "덧씌우기" — 새 파일 `sprites.js`를 game.js보다 먼저 로드하고,
+기존 그리기 함수 11곳 앞머리에 `if (SPR.ready) { 새 그리기; return; }`
+분기만 넣었습니다. 스프라이트 로드 전/실패 시에는 기존 벡터 그리기가 그대로
+나오므로 안전합니다.
+
+## Changes Applied
+
+### 1. `sprites.js` 신규 파일 (프로젝트 루트, 384줄)
+SVG 인라인 데이터 → data URL로 즉시 로드하는 17개 스프라이트:
+
+| 이름 | 크기 | 용도 |
+|------|------|------|
+| `player_p38` | 64×64 | 플레이어 |
+| `enemy_zero` | 48×48 | 스카우트 (A6M 제로) |
+| `enemy_ki61` | 52×52 | 파이터 (Ki-61) |
+| `enemy_g4m` | 96×72 | 폭격기 + 하트 중간보스 비주얼 |
+| `boss_heavy` | 200×130 | 최종 보스 (2엔진 인터셉터) |
+| `boss_body` | 200×130 | 최종 보스 (다이잉 — 날개 부재) |
+| `bullet_player` | 10×24 | 플레이어 탄환 |
+| `bullet_enemy` | 16×16 | 적 탄환 (빨강) |
+| `bullet_enemy_pink` | 16×16 | 호밍 / 드론 탄환 (분홍) |
+| `explosion_1`..`explosion_4` | 48×48 | 폭발 플립북 4프레임 |
+| `powerup_P` | 28×28 | P 파워업 아이콘 |
+| `powerup_B` | 28×28 | B 파워업 아이콘 |
+| `bomb_icon` | 14×18 | 폭탄 아이콘 |
+| `life_icon` | 18×16 | 목숨 아이콘 |
+
+내부 로더:
+- `window.SPR = { ready, img, flash, shadow, load }` (game.js에 default 폴백도 있음)
+- 모든 스프라이트의 **흰색 실루엣**(`flash`)과 **검은 실루엣**(`shadow`)을
+  2× 해상도 오프스크린 캔버스에 미리 합성 → hit feedback·drop shadow 즉시 사용
+- 헬퍼 `drawSprite(ctx, name, cx, cy, w, angle, alpha, flash)`:
+  - 자동 비율 유지 (높이 = w × 원본비)
+  - `flash` 값으로 흰 실루엣 블렌드
+- 헬퍼 `drawSpriteShadow(ctx, name, cx, cy, w, angle, alpha)`: 그림자
+
+### 2. `index.html` 로드 순서 (Lines 122-123)
+```html
+<script src="sprites.js"></script>
+<script src="game.js"></script>
+```
+스프라이트가 먼저 로드되어 `window.SPR`이 정의된 채로 game.js가 실행됨.
+
+### 3. `game.js` 상단 SPR 가드 (Lines 7-9)
+```js
+// === Sprite set (sprites.js). Guarded so the game still runs without it. ===
+if (typeof SPR === 'undefined') { window.SPR = { ready: false, img: {}, flash: {}, shadow: {}, load: function () {} }; }
+SPR.load();
+```
+`sprites.js`가 누락되어도 게임이 죽지 않고 즉시 legacy로 폴백.
+
+### 4. SPRITE VISUAL LAYER (Lines 5817-6215) — 신규 드로잉 블록
+오버레이 헬퍼 함수들 (모두 top-level, 모두 SPR.ready 체크):
+- `VIS` 객체: horizon/cloud/wave/boom 컨테이너 (game.js line 5819)
+- `visInit()`: cumulus 스탬프 + 3-layer 패럴랙스 + 바다 wave 70개 + 7개 그라디언트
+  1회만 빌드 (game.js line 5846)
+- `visTimeScale()`: 슬로우모션 시 배경도 느리게 (line 5888)
+- `drawBackgroundSprite()`: 하늘 → sun glow → 바다 → wave → 3-layer 구름
+  (line 5890)
+- `drawPlayerSprite(px, py)`: 좌우 이동량으로 뱅킹 각도 자동 보간, ground shadow
+  옵션 (line 5904)
+- `drawEnemySprite(e)`: type별 라우팅 (scout/fighter/bomber/heavyBomber/rammer/
+  final/waveBoss) + 엔진 화재·실드 링 부가 (line 5949)
+- `drawBossEngineFire(e, w)`: HP 50% 이하에서 엔진 화염·연기 (line 6029)
+- `drawFinalBossShield(e)`: entryInvuln 동안 8각 시안 링 + "SHIELD" 라벨
+  (line 6052)
+- `drawBulletSprite(b, isEnemy)`: 호밍/색상으로 pink vs red 분기 (line 6078)
+- `drawPowerupSprite(p)`: 부유 애니메이션 + 컬러 (line 6089)
+- `drawBooms()`: 4프레임 폭발 플립북, scale·회전 (line 6119)
+- `drawDroneSprite(d)` (신규, line 6109): player_p38을 22px로 + 핑크 틴트
+- `drawDroneBulletSprite(b)` (신규, line 6117): 호밍 여부로 bullet_enemy_pink
+  vs bullet_enemy
+- `drawMissileSprite(m)` (신규, line 6124): bullet_player를 missile 크기로
+- `drawLaserBeamSprite()` (신규, line 6131): 레이저는 전용 스프라이트 부적합,
+  placeholder (legacy fallback과 동일 효과)
+- `drawUISprite()`: 1P/HI/ST + 라이프(p38 아이콘) + 폭탄(bomb_icon) + WAVE 배너 +
+  보스 HP바 + 콤보 + 힛마커 (line 6133)
+
+### 5. 그리기 함수 11곳에 `if (SPR.ready)` 가드 추가 (체크리스트)
+
+| # | 함수 | game.js 줄 | 분기 패턴 |
+|---|------|-----------|----------|
+| 1 | `drawLaserBeam` | **5152** | `if (SPR.ready) { drawLaserBeamSprite(); /* fall through */ }` |
+| 2 | `drawBackground` | **6338** | `if (SPR.ready) { drawBackgroundSprite(); return; }` |
+| 3 | `drawPlayer` | **6497** | `if (SPR.ready) { drawPlayerSprite(px, py); } else { ... legacy ... }` |
+| 4 | `drawEnemy` | **6984** | `if (SPR.ready && drawEnemySprite(e)) { /* sprite drew */ } else if (...)` |
+| 5 | `drawBullet` | **8377** | `if (SPR.ready && !bullet.isBomb) { drawBulletSprite(bullet, isEnemy); return; }` |
+| 6 | `drawPowerup` | **8473** | `if (SPR.ready) { drawPowerupSprite(p); continue; }` |
+| 7 | `drawDrone` | **8523** | `if (SPR.ready) { drawDroneSprite(d); continue; }` |
+| 8 | `drawDroneBullet` | **8638** | `if (SPR.ready) { drawDroneBulletSprite(b); continue; }` |
+| 9 | `drawExplosion` | **8680** | `if (SPR.ready) drawBooms();` (legacy 파티클 위에 sprite boom 추가) |
+| 10 | `drawMissiles` | **8877** | `if (SPR.ready) { drawMissileSprite(m); continue; }` |
+| 11 | `drawUI` | **8974** | `if (SPR.ready) { drawUISprite(); return; }` |
+
+(보조 가드)
+- `drawEnemySprite` (line 5975): `if (!SPR.ready) return false;` — sprite 미준비 시 false 반환하여 drawEnemy()의 `else if` 분기로 자연스럽게 fallback
+- `drawPlayerSprite` (line 6164): `if (!SPR.ready) return;`
+- `spawnBoom` (line 6135): `if (!SPR.ready) return;` (legacy 입자만)
+
+## Verification Results
+- **Syntax:** OK (9521 lines, `new Function(src)` 통과, 400770 chars)
+- **SPR.ready 카운트:** 14 (그리기 분기 11 + 헬퍼 가드 3)
+- **sprites.js:** 200 OK from http://localhost:4001/sprites.js
+- **Render check:** 타이틀 화면 OK (스카이+구름+바다 배경, FLYING TIGERS 타이틀, PRESS SPACE TO START, 컨트롤 안내 모두 정상)
+- **Mobile check (375px):** 가로 오버플로 없음
+- **Runtime errors:** favicon 404만 (게임과 무관)
+- **로직 무변경:** 스폰·충돌·히트박스·점수·보스 패턴 코드 0줄 변경 — `if (SPR.ready)` 가드는 순수하게 그리기 분기만 추가
+
+## Final State
+| 항목 | 값 |
+|------|---|
+| `sprites.js` 로드 순서 | `index.html`에서 `game.js` 직전 |
+| SPR 폴백 | `typeof SPR === 'undefined'` 시 default stub 자동 생성 |
+| 그리기 함수 11곳 | 모두 `if (SPR.ready)` 가드 적용 |
+| 로직 변경 | 0줄 (스폰·충돌·히트박스·점수·보스 패턴 모두 그대로) |
+| 충돌/히트박스 | 비주얼만 교체, 판정은 기존 코드 그대로 |
+| 비주얼 일관성 | P-38 vs Zero vs Ki-61 vs G4M 즉시 식별 가능한 캠프 + 무장국 |
+| Hit feedback | `e.hitFlash > 0` 시 흰 실루엣 0..1 블렌드 (모든 sprite 공통) |
+| Drop shadow | 비행체가 지면 근처일 때만 검은 실루엣 (drawPlayerSprite) |

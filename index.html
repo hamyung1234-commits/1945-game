@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
     <title>1945 - Flying Tigers</title>
+    <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
         
@@ -18,6 +19,7 @@
         body {
             background: #0a0a0f;
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
             min-height: 100vh;
@@ -92,18 +94,8 @@
             transform: scale(0.95);
         }
         
-        body.touch-device #controls { display: none; }
-        #controls {
-            position: absolute;
-            bottom: 10px;
-            left: 0;
-            right: 0;
-            text-align: center;
-            color: #666;
-            font-size: 8px;
-            line-height: 1.6;
-        }
-        
+        /* (v24) controls + weapon manual panel removed from the page.
+           The in-game help will live inside the game screen itself later. */
         /* Adjust for small screens */
         @media (max-width: 520px) {
             #gameContainer {
@@ -156,12 +148,20 @@
                 </svg>
             </button>
         </div>
-        
-        <div id="controls">
-            MOVE: Arrow Keys / WASD | SHOOT: Space | BOMB: B | PAUSE: P
-        </div>
     </div>
-    
+    <!-- (v24) controls + manual panel removed — manual will live inside the game screen later -->
+    <!-- (v24) GAME_URL placeholder restored so drawTitleScreen can show the
+         SHARE block when the URL is filled in. Leave blank to show the
+         setup hint on the title screen instead. -->
+    <script>
+        // === SHARE URL PLACEHOLDER ==========================================
+        // Replace the empty string below with the public URL where this game
+        // is hosted (e.g. "https://my-1945.forgedb.app"), save, refresh —
+        // the title screen will then display "SHARE THIS GAME: <URL>" in
+        // yellow so visitors can copy it and send it to friends. If this
+        // stays empty, the title shows a blinking setup hint instead.
+        var GAME_URL = '';
+    </script>
     <script src="sprites.js"></script>
     <script src="game.js"></script>
 </body>
